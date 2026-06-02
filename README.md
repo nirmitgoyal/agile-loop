@@ -82,38 +82,3 @@ Start the dashboard:
 ```
 
 It serves `http://127.0.0.1:8765` and reads `.agile-loop/status.json`.
-
-## Contract
-
-For each `todo` task, the runner plans, implements, runs CodeRabbit, runs
-`/review`, runs `/qa-only mode: full`, fixes only actual findings, runs
-CodeRabbit again, runs `/ship`, waits for a human merge, then syncs the base
-branch:
-
-```bash
-git pull --rebase origin <base>
-```
-
-Guardrails:
-
-- Keep one PR per queued task.
-- Stop on `BLOCKED`, `NEEDS_CONTEXT`, failed tests, missing auth, mandatory human
-  judgment, or closed-unmerged PR state.
-- Do not fix CodeRabbit or QA issues until findings exist.
-- Keep fixes scoped to the finding source.
-- Do not mark a task `done` until the base branch has synced with
-  `origin/<base>`.
-
-Every failed stage gets three exponential-backoff retries. Set
-`AGILE_LOOP_RETRY_INITIAL_SECONDS` to override the first retry delay.
-
-## Tests
-
-```bash
-bash -n scripts/agile-loop.sh
-bash -n scripts/install.sh
-python3 -m py_compile scripts/agile-dashboard.py
-tests/test-agile-loop.sh
-tests/test-install.sh
-tests/test-agile-dashboard.sh
-```
