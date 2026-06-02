@@ -43,8 +43,8 @@ Options:
   --implementation-model M    Implementation model. Defaults to gpt-5.4.
   --review-model MODEL        Review/QA/ship model. Defaults to gpt-5.5.
   --max-parallel N            Max remediation sub-agents to request. Defaults to 6.
-  --dry-run                   Print planned sessions without invoking Codex or changing task status.
-  --unsafe-bypass-approvals   Required for non-dry-run execution. Child Codex sessions use approval/sandbox bypass.
+  --dry-run                   Print planned sessions without invoking the runner adapter or changing task status.
+  --unsafe-bypass-approvals   Required for non-dry-run execution. Child sessions use approval/sandbox bypass.
   -h, --help                  Show this help.
 
 Failed loop stages are retried 3 times with exponential backoff.

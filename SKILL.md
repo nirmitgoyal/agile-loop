@@ -5,11 +5,27 @@ description: Run and Monitor a GStack->GSD->Superpowers->GStack loop
 
 # Agile Loop
 
-Run a simple autonomous engineering loop. The loop reads queued tasks, launches fresh Codex sessions for each major phase, ships one PR, waits for the human to merge it, marks the task done, and moves to the next queued task.
+Run a simple autonomous engineering loop for Claude Code, Codex, Anti-gravity, and similar coding agents. The loop reads queued tasks, launches fresh child sessions for each major phase, ships one PR, waits for the human to merge it, marks the task done, and moves to the next queued task.
 
-This keeps the autonomous loop pattern, but adapts it for a GStack + GSD + Superpowers + CodeRabbit workflow.
+This keeps the autonomous loop pattern, but adapts it for a GStack + GSD + Superpowers + CodeRabbit workflow. The included shell runner is a Codex CLI adapter; the queue, prompts, dashboard, and workflow contract are portable to other agent hosts.
 
 ## Quick Start
+
+Install user-wide for detected supported hosts:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash
+```
+
+Install for a specific host:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host codex
+curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host claude
+curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host antigravity
+```
+
+Use `--upgrade` to replace an existing install.
 
 ```bash
 ~/.codex/skills/agile-loop/scripts/agile-loop.sh \
@@ -20,9 +36,9 @@ This keeps the autonomous loop pattern, but adapts it for a GStack + GSD + Super
   --dry-run
 ```
 
-Use `--dry-run` first to print the sessions that would run without invoking Codex or changing task status.
+Use `--dry-run` first to print the sessions that would run without invoking the runner adapter or changing task status.
 
-Real execution launches child Codex sessions with approval and sandbox bypass. Opt in explicitly:
+With the included Codex adapter, real execution launches child sessions with approval and sandbox bypass. Opt in explicitly:
 
 ```bash
 ~/.codex/skills/agile-loop/scripts/agile-loop.sh \
@@ -69,7 +85,7 @@ Supported statuses:
 
 ## Loop Contract
 
-For each `todo` task, run this sequence in separate Codex sessions. The runner enforces this with one fresh `codex exec --ephemeral` invocation per Codex-backed step; handoff happens through repo files, task files, and stage output files, not prior child-session history.
+For each `todo` task, run this sequence in separate agent sessions. The included Codex runner enforces this with one fresh `codex exec --ephemeral` invocation per agent-backed step; handoff happens through repo files, task files, and stage output files, not prior child-session history.
 
 1. Turn the GSD phase/task into a Superpowers implementation plan using `gpt-5.5`.
 2. Execute the plan with `superpowers:subagent-driven-development` using `gpt-5.4`.

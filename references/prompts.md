@@ -1,6 +1,6 @@
 # Agile Loop Prompt Contracts
 
-The runner generates these prompt shapes for fresh `codex exec --ephemeral` sessions. Keep final JSON lines intact; the shell runner uses them for branching and retries JSON-contract stages when the final JSON line is missing. Child sessions must reconstruct context from the repository, task file, and explicit output files rather than prior session history.
+Agile Loop uses these prompt shapes for fresh child agent sessions. The included shell runner currently sends them through `codex exec --ephemeral`. Keep final JSON lines intact; the shell runner uses them for branching and retries JSON-contract stages when the final JSON line is missing. Child sessions must reconstruct context from the repository, task file, and explicit output files rather than prior session history.
 
 ## Planning Session
 

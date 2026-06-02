@@ -1,6 +1,8 @@
 # Agile Loop
 
-Agile Loop is a small Codex skill that runs an autonomous engineering queue with fresh child sessions for each major stage: planning, implementation, review, QA, shipping, human merge, and release documentation.
+Agile Loop is an agent workflow skill for Claude Code, Codex, Anti-gravity, and similar coding agents. It runs an autonomous engineering queue with fresh child sessions for each major stage: planning, implementation, review, QA, shipping, human merge, and release documentation.
+
+The workflow is portable across agent hosts. This repo currently includes a Codex CLI runner adapter plus shared queue, dashboard, prompt contracts, and documentation that other hosts can reuse.
 
 It combines three complementary skill families:
 
@@ -20,29 +22,79 @@ The diagram shows the full loop:
 
 - Discovery and planning start with Office Hours, Auto Plan, CEO Review, and Eng Review.
 - Design and planning convert product intent into GStack specs, GSD phases, and Superpowers plans.
-- Execution runs in fresh Codex sessions with CodeRabbit, GStack review, QA, investigation, ship, merge, and document-release gates.
+- Execution runs in fresh agent sessions with CodeRabbit, GStack review, QA, investigation, ship, merge, and document-release gates.
 - Retro, Learn, and Document Release feed the next cycle.
 
 ## Requirements
 
-- Codex CLI available on `PATH` as `codex`.
+- An agent runtime capable of launching isolated/headless child sessions.
+- For the included shell runner: Codex CLI available on `PATH` as `codex`.
 - Python 3 for dashboard/status helpers.
 - GitHub CLI available as `gh` for PR polling.
 - Git available as `git`.
-- The target repo should have the skills used by the prompts installed or available to Codex: GStack, GSD, Superpowers, and CodeRabbit.
+- The target repo should have the skills used by the prompts installed or available to your agent host: GStack, GSD, Superpowers, and CodeRabbit.
 
 The runner defaults to `gpt-5.5` for planning/review/QA/ship and `gpt-5.4` for implementation. Override them with `--default-model`, `--implementation-model`, and `--review-model`.
 
 ## Install
 
-Clone the repo, then symlink it into your Codex skills directory:
+One-command install auto-detects supported hosts on your machine:
 
 ```bash
-git clone https://github.com/OWNER/agile-loop.git
+curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash
+```
+
+Install for every supported host:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host all
+```
+
+Install for one host:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host codex
+curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host claude
+curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host antigravity
+```
+
+Install into the current project instead of your user-wide skill directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host claude --scope project
+curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host antigravity --scope project
+```
+
+Pass `--upgrade` to replace an existing install, and `--dry-run` to print destinations without writing.
+
+Host install locations:
+
+| Host | User scope | Project scope |
+| --- | --- | --- |
+| Codex | `$CODEX_HOME/skills/agile-loop` or `~/.codex/skills/agile-loop` | `.codex/skills/agile-loop` |
+| Claude Code | `~/.claude/skills/agile-loop` | `.claude/skills/agile-loop` |
+| Anti-gravity | `~/.gemini/antigravity/skills/agile-loop` | `.agents/skills/agile-loop` |
+
+Manual install is just a copy or symlink into one of those directories. Codex example:
+
+```bash
+git clone https://github.com/nirmitgoyal/agile-loop.git
 ln -s "$PWD/agile-loop" ~/.codex/skills/agile-loop
 ```
 
-You can also copy the folder to `~/.codex/skills/agile-loop` if you do not want a symlink.
+Claude Code, Anti-gravity, and other hosts can use the same repo content from their own skill/script locations.
+
+Update an existing install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host all --upgrade
+```
+
+Uninstall by deleting the installed folder, for example:
+
+```bash
+rm -rf ~/.codex/skills/agile-loop ~/.claude/skills/agile-loop ~/.gemini/antigravity/skills/agile-loop
+```
 
 ## Queue Format
 
@@ -84,7 +136,7 @@ Always start with a dry run:
   --dry-run
 ```
 
-Real execution launches fresh child Codex sessions with approval and sandbox bypass. This is intentionally gated:
+With the included Codex adapter, real execution launches fresh child sessions with approval and sandbox bypass. This is intentionally gated:
 
 ```bash
 ~/.codex/skills/agile-loop/scripts/agile-loop.sh \
@@ -109,7 +161,7 @@ The dashboard serves `http://127.0.0.1:8765` by default and shows the active que
 
 ## Loop Contract
 
-For each `todo` task, the runner performs one fresh `codex exec --ephemeral` invocation per Codex-backed step:
+For each `todo` task, the included Codex runner performs one fresh `codex exec --ephemeral` invocation per agent-backed step:
 
 1. Convert the GSD phase/task into a Superpowers implementation plan.
 2. Execute the plan with `superpowers:subagent-driven-development`.
@@ -138,9 +190,11 @@ Every failed stage gets three exponential-backoff retries before the task is blo
 
 ```bash
 bash -n scripts/agile-loop.sh
+bash -n scripts/install.sh
 python3 -m py_compile scripts/agile-dashboard.py
 tests/test-agile-loop.sh
+tests/test-install.sh
 tests/test-agile-dashboard.sh
 ```
 
-The runner tests use fake `codex`, `gh`, and `git` commands. The dashboard test binds a local HTTP server.
+The runner tests use fake `codex`, `gh`, and `git` commands. The installer tests use temporary home/project directories. The dashboard test binds a local HTTP server.
