@@ -12,8 +12,6 @@ It combines three complementary skill families:
 
 Vocabulary matters in this repo: GStack produces specs, GSD produces phases, and Superpowers produces plans.
 
-The rationale comes from Eric Tech's video, [GStack + GSD + Superpowers Workflow Is Insane!](https://www.youtube.com/watch?v=BlTpG51x94w), and the transcript summary at [Sozai](https://sozai.app/transcript/gstack-gsd-superpowers-workflow/): use GStack for intent, GSD for phase decomposition, Superpowers for TDD execution, and an autonomous loop to keep the orchestrator context small while headless sessions do the work.
-
 ## Workflow
 
 ![Agile Loop workflow](docs/agile-loop-diagram.png)
@@ -44,57 +42,8 @@ One-command install auto-detects supported hosts on your machine:
 curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash
 ```
 
-Install for every supported host:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host all
-```
-
-Install for one host:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host codex
-curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host claude
-curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host antigravity
-```
-
-Install into the current project instead of your user-wide skill directory:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host claude --scope project
-curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host antigravity --scope project
-```
-
 Pass `--upgrade` to replace an existing install, and `--dry-run` to print destinations without writing.
 
-Host install locations:
-
-| Host | User scope | Project scope |
-| --- | --- | --- |
-| Codex | `$CODEX_HOME/skills/agile-loop` or `~/.codex/skills/agile-loop` | `.codex/skills/agile-loop` |
-| Claude Code | `~/.claude/skills/agile-loop` | `.claude/skills/agile-loop` |
-| Anti-gravity | `~/.gemini/antigravity/skills/agile-loop` | `.agents/skills/agile-loop` |
-
-Manual install is just a copy or symlink into one of those directories. Codex example:
-
-```bash
-git clone https://github.com/nirmitgoyal/agile-loop.git
-ln -s "$PWD/agile-loop" ~/.codex/skills/agile-loop
-```
-
-Claude Code, Anti-gravity, and other hosts can use the same repo content from their own skill/script locations.
-
-Update an existing install:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host all --upgrade
-```
-
-Uninstall by deleting the installed folder, for example:
-
-```bash
-rm -rf ~/.codex/skills/agile-loop ~/.claude/skills/agile-loop ~/.gemini/antigravity/skills/agile-loop
-```
 
 ## Queue Format
 
