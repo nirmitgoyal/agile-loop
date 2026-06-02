@@ -2,7 +2,7 @@
 
 Agile Loop is an agent workflow skill for Claude Code, Codex, Anti-gravity, and similar coding agents. It runs an autonomous engineering queue with fresh child sessions for each major stage: planning, implementation, review, QA, shipping, human merge, and release documentation.
 
-The workflow is portable across agent hosts. This repo currently includes a Codex CLI runner adapter plus shared queue, dashboard, prompt contracts, and documentation that other hosts can reuse.
+The workflow is meant to be portable across agent hosts, but the maintained runner is very Codex-specific right now: it invokes `codex exec --ephemeral`, uses Codex CLI flags, and assumes Codex-style skill prompts. The queue format, prompt contracts, dashboard, and stage ordering are deliberately simple, so adapting it for Claude Code should mostly mean swapping in a Claude child-session adapter and adjusting prompt/tool names.
 
 It combines three complementary skill families:
 
@@ -107,6 +107,8 @@ Start the dashboard in another terminal:
 ```
 
 The dashboard serves `http://127.0.0.1:8765` by default and refreshes the runner status every 15 seconds. It uses a server-side event stream so hidden browser tabs do not fall back to one-minute timer throttling. It shows the active queue, current status, current stage, runner update time, last poll time, and blocked reason.
+
+![Agile Loop live dashboard](docs/agile-loop-dashboard.png)
 
 ## Loop Contract
 
