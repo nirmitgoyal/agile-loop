@@ -12,7 +12,7 @@ import webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 
@@ -405,8 +405,12 @@ def task_paths(repo: Path, queue_glob: str) -> list[Path]:
     return sorted(Path(path) for path in glob.glob(pattern) if Path(path).is_file())
 
 
-def read_frontmatter(path: Path) -> dict[str, str]:
-    text = path.read_text(errors="ignore")
+def read_frontmatter(path: Path) -> Optional[dict[str, str]]:
+    try:
+        text = path.read_text(errors="ignore")
+    except OSError:
+        return None
+
     if not text.startswith("---\n"):
         return {}
 
@@ -424,7 +428,11 @@ def read_frontmatter(path: Path) -> dict[str, str]:
 
 
 def blocked_reason_from_task(path: Path) -> str:
-    text = path.read_text(errors="ignore")
+    try:
+        text = path.read_text(errors="ignore")
+    except OSError:
+        return ""
+
     for line in reversed(text.splitlines()):
         if "[blocked]" not in line:
             continue
@@ -436,6 +444,8 @@ def load_queue(repo: Path, queue_glob: str) -> list[dict[str, str]]:
     queue: list[dict[str, str]] = []
     for path in task_paths(repo, queue_glob):
         metadata = read_frontmatter(path)
+        if metadata is None:
+            continue
         status = metadata.get("status", "unknown")
         if status == "done":
             continue
@@ -455,6 +465,8 @@ def load_past_work(repo: Path, queue_glob: str) -> list[dict[str, str]]:
     past_work: list[dict[str, str]] = []
     for path in reversed(task_paths(repo, queue_glob)):
         metadata = read_frontmatter(path)
+        if metadata is None:
+            continue
         status = metadata.get("status", "unknown")
         if status != "done":
             continue

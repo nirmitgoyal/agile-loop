@@ -73,6 +73,21 @@ run_install codex-user-upgrade --host codex --upgrade > "$TMP_ROOT/codex-user-up
 assert_installed "$TMP_ROOT/codex-user-upgrade/codex-home/skills/agile-loop"
 assert_not_exists "$TMP_ROOT/codex-user-upgrade/codex-home/skills/agile-loop/old-marker"
 
+run_install self-upgrade --host codex > "$TMP_ROOT/self-upgrade-first.out"
+touch "$TMP_ROOT/self-upgrade/codex-home/skills/agile-loop/self-marker"
+if HOME="$TMP_ROOT/self-upgrade/home" \
+  CODEX_HOME="$TMP_ROOT/self-upgrade/codex-home" \
+  "$TMP_ROOT/self-upgrade/codex-home/skills/agile-loop/scripts/install.sh" \
+  --host codex \
+  --project-dir "$TMP_ROOT/self-upgrade/project" \
+  --upgrade > "$TMP_ROOT/self-upgrade-second.out" 2>&1; then
+  echo "Expected self-upgrade to fail without deleting the installed source" >&2
+  exit 1
+fi
+assert_contains "$TMP_ROOT/self-upgrade-second.out" "source and destination are the same"
+assert_installed "$TMP_ROOT/self-upgrade/codex-home/skills/agile-loop"
+assert_file "$TMP_ROOT/self-upgrade/codex-home/skills/agile-loop/self-marker"
+
 run_install claude-user --host claude > "$TMP_ROOT/claude-user.out"
 assert_installed "$TMP_ROOT/claude-user/home/.claude/skills/agile-loop"
 

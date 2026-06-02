@@ -527,6 +527,17 @@ mark_blocked_and_stop() {
   exit 1
 }
 
+gh_pr_view_field() {
+  local pr_url="$1"
+  local field="$2"
+
+  if [ -n "$pr_url" ]; then
+    "$GH_BIN" pr view "$pr_url" --json "$field" -q ".$field"
+  else
+    "$GH_BIN" pr view --json "$field" -q ".$field"
+  fi
+}
+
 poll_until_merged() {
   local task="$1"
   local pr_url="$2"
@@ -545,8 +556,8 @@ poll_until_merged() {
 
   while true; do
     local state merged_at now elapsed
-    state="$("$GH_BIN" pr view --json state -q .state 2>/dev/null || true)"
-    merged_at="$("$GH_BIN" pr view --json mergedAt -q .mergedAt 2>/dev/null || true)"
+    state="$(gh_pr_view_field "$pr_url" state 2>/dev/null || true)"
+    merged_at="$(gh_pr_view_field "$pr_url" mergedAt 2>/dev/null || true)"
     if [ "$state" = "MERGED" ] || { [ -n "$merged_at" ] && [ "$merged_at" != "null" ]; }; then
       log "PR merged: ${pr_url:-current branch PR}"
       write_status "running" "poll-merge" "completed" "PR merged: ${pr_url:-current branch PR}" "$task" "$CURRENT_ITERATION" "$pr_url"

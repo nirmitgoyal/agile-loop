@@ -123,6 +123,8 @@ write_fake_gh() {
 #!/usr/bin/env bash
 set -euo pipefail
 
+printf '%s\n' "$*" >> "${FAKE_GH_LOG:?}"
+
 args=" $* "
 if [[ "$args" == *" --json state "* ]]; then
   if [ "${FAKE_GH_CLOSED:-0}" = "1" ]; then
@@ -322,9 +324,11 @@ run_case() {
 
   local log="$repo/codex.log"
   local git_log="$repo/git.log"
+  local gh_log="$repo/gh.log"
   local rc=0
   FAKE_CODEX_LOG="$log" \
   FAKE_GIT_LOG="$git_log" \
+  FAKE_GH_LOG="$gh_log" \
   FAKE_CRITICAL="$critical" \
   FAKE_MAJOR="$major" \
   FAKE_QA_ISSUES="$qa_issues" \
@@ -412,6 +416,7 @@ assert_not_contains "$repo_zero/codex.log" "remediate-qa"
 assert_json_value "$repo_zero/.agile-loop/status.json" status completed
 assert_json_value "$repo_zero/.agile-loop/status.json" stage complete
 assert_json_value "$repo_zero/.agile-loop/status.json" task_title "Test task"
+assert_contains "$repo_zero/gh.log" "^pr view https://github.com/acme/repo/pull/1 --json state -q .state$"
 assert_contains "$repo_zero/git.log" "^fetch origin +refs/heads/main:refs/remotes/origin/main$"
 assert_contains "$repo_zero/git.log" "^switch main$"
 assert_contains "$repo_zero/git.log" "^merge --ff-only refs/remotes/origin/main$"
@@ -470,6 +475,7 @@ write_fake_gh "$repo_heartbeat"
 write_fake_git "$repo_heartbeat"
 FAKE_CODEX_LOG="$repo_heartbeat/codex.log" \
 FAKE_GIT_LOG="$repo_heartbeat/git.log" \
+FAKE_GH_LOG="$repo_heartbeat/gh.log" \
 FAKE_SLEEP_STAGE="plan" \
 FAKE_SLEEP_SECONDS="4" \
 AGILE_LOOP_STATUS_HEARTBEAT_INTERVAL="1" \

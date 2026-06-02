@@ -15,6 +15,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+assert_not_contains() {
+  local pattern="$1"
+  local file="$2"
+  if grep -q "$pattern" "$file"; then
+    echo "unexpected match for '$pattern' in $file" >&2
+    exit 1
+  fi
+}
+
 repo="$TMP_ROOT/repo"
 mkdir -p "$repo/.agile-loop"
 mkdir -p "$repo/docs/agile-loop/tasks"
@@ -92,6 +101,34 @@ Show the blocker.
 
 - 2026-05-29T00:00:00Z [blocked] Needs user answer
 EOF
+cat > "$repo/docs/agile-loop/tasks/09-unreadable.md" <<'EOF'
+---
+status: todo
+title: Unreadable task
+---
+EOF
+chmod 000 "$repo/docs/agile-loop/tasks/09-unreadable.md"
+
+python3 - "$DASHBOARD" "$repo" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+dashboard = Path(sys.argv[1])
+repo = Path(sys.argv[2])
+missing = repo / "docs/agile-loop/tasks/99-vanished.md"
+sys.dont_write_bytecode = True
+
+spec = importlib.util.spec_from_file_location("agile_dashboard", dashboard)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+
+module.task_paths = lambda _repo, _queue_glob: [missing]
+assert module.load_queue(repo, "unused") == []
+assert module.load_past_work(repo, "unused") == []
+assert module.blocked_reason_from_task(missing) == ""
+PY
 
 "$DASHBOARD" --repo "$repo" --port 0 > "$TMP_ROOT/server.out" 2>&1 &
 SERVER_PID="$!"
@@ -160,6 +197,7 @@ titles = [item["title"] for item in data["queue"]]
 assert "Active task" in titles
 assert "Blocked task" in titles
 assert "Finished task" not in titles
+assert "Unreadable task" not in titles
 past_work_titles = [item["title"] for item in data["past_work"]]
 assert past_work_titles == [
     "Done task 08",
@@ -170,6 +208,7 @@ assert past_work_titles == [
 ]
 assert "Finished task" not in past_work_titles
 assert "Active task" not in past_work_titles
+assert "Unreadable task" not in past_work_titles
 blocked = next(item for item in data["queue"] if item["title"] == "Blocked task")
 assert blocked["blocked_reason"] == "Needs user answer"
 PY
@@ -177,20 +216,20 @@ grep -q 'const POLL_INTERVAL_MS = 15000;' "$TMP_ROOT/index.out"
 grep -q 'new EventSource("/api/events")' "$TMP_ROOT/index.out"
 grep -q 'new Intl.DateTimeFormat(undefined,' "$TMP_ROOT/index.out"
 grep -q 'hour: "numeric"' "$TMP_ROOT/index.out"
-! grep -q 'timeZoneName:' "$TMP_ROOT/index.out"
-! grep -q 'poll #' "$TMP_ROOT/index.out"
+assert_not_contains 'timeZoneName:' "$TMP_ROOT/index.out"
+assert_not_contains 'poll #' "$TMP_ROOT/index.out"
 grep -q '>Queue<' "$TMP_ROOT/index.out"
 grep -q '>Current Status<' "$TMP_ROOT/index.out"
 grep -q '>Current Stage<' "$TMP_ROOT/index.out"
-! grep -q '>Runner Updated<' "$TMP_ROOT/index.out"
+assert_not_contains '>Runner Updated<' "$TMP_ROOT/index.out"
 grep -q '>Last Poll<' "$TMP_ROOT/index.out"
 grep -q '>Past Work<' "$TMP_ROOT/index.out"
 grep -q '<details class="panel" open>' "$TMP_ROOT/index.out"
 grep -q 'id="pastWork"' "$TMP_ROOT/index.out"
 grep -q 'renderPastWork(data.past_work);' "$TMP_ROOT/index.out"
-! grep -q '>Browser Time Zone<' "$TMP_ROOT/index.out"
+assert_not_contains '>Browser Time Zone<' "$TMP_ROOT/index.out"
 grep -q '>Blocked<' "$TMP_ROOT/index.out"
-! grep -q '>Iteration<' "$TMP_ROOT/index.out"
-! grep -q '>Details<' "$TMP_ROOT/index.out"
+assert_not_contains '>Iteration<' "$TMP_ROOT/index.out"
+assert_not_contains '>Details<' "$TMP_ROOT/index.out"
 
 echo "agile-loop dashboard tests passed"

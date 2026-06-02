@@ -115,6 +115,15 @@ resolve_source_dir() {
   download_source
 }
 
+same_dir() {
+  local left="$1"
+  local right="$2"
+  [ -d "$left" ] && [ -d "$right" ] || return 1
+  left="$(cd "$left" && pwd -P)"
+  right="$(cd "$right" && pwd -P)"
+  [ "$left" = "$right" ]
+}
+
 host_detected() {
   case "$1" in
     codex)
@@ -203,6 +212,9 @@ copy_skill() {
 
   if [ -e "$dest" ]; then
     [ "$UPGRADE" = "1" ] || die "$dest already exists; pass --upgrade to replace it"
+    if same_dir "$source" "$dest"; then
+      die "source and destination are the same ($dest); cannot upgrade in place"
+    fi
     rm -rf "$dest"
   fi
 
