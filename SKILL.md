@@ -54,7 +54,7 @@ Start the status dashboard in another terminal:
   --repo /path/to/your/repo
 ```
 
-The dashboard serves `http://127.0.0.1:8765` by default and refreshes the runner status every 15 seconds. It uses a server-side event stream so hidden browser tabs do not fall back to one-minute timer throttling. It shows the non-done queue, current status, current stage, runner update time, last poll time, and blocked reason when blocked.
+The dashboard serves `http://127.0.0.1:8765` by default and refreshes the runner status every 15 seconds. It uses a server-side event stream so hidden browser tabs do not fall back to one-minute timer throttling. It shows the non-done queue, the latest five completed tasks in past work, current status, current stage, last poll time, and blocked reason when blocked.
 
 ## Queue
 

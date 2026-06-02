@@ -49,6 +49,36 @@ title: Finished task
 ## Objective
 Exclude this task from the dashboard queue.
 EOF
+cat > "$repo/docs/agile-loop/tasks/04-done.md" <<'EOF'
+---
+status: done
+title: Done task 04
+---
+EOF
+cat > "$repo/docs/agile-loop/tasks/05-done.md" <<'EOF'
+---
+status: done
+title: Done task 05
+---
+EOF
+cat > "$repo/docs/agile-loop/tasks/06-done.md" <<'EOF'
+---
+status: done
+title: Done task 06
+---
+EOF
+cat > "$repo/docs/agile-loop/tasks/07-done.md" <<'EOF'
+---
+status: done
+title: Done task 07
+---
+EOF
+cat > "$repo/docs/agile-loop/tasks/08-done.md" <<'EOF'
+---
+status: done
+title: Done task 08
+---
+EOF
 cat > "$repo/docs/agile-loop/tasks/03-blocked.md" <<'EOF'
 ---
 status: blocked
@@ -130,18 +160,34 @@ titles = [item["title"] for item in data["queue"]]
 assert "Active task" in titles
 assert "Blocked task" in titles
 assert "Finished task" not in titles
+past_work_titles = [item["title"] for item in data["past_work"]]
+assert past_work_titles == [
+    "Done task 08",
+    "Done task 07",
+    "Done task 06",
+    "Done task 05",
+    "Done task 04",
+]
+assert "Finished task" not in past_work_titles
+assert "Active task" not in past_work_titles
 blocked = next(item for item in data["queue"] if item["title"] == "Blocked task")
 assert blocked["blocked_reason"] == "Needs user answer"
 PY
 grep -q 'const POLL_INTERVAL_MS = 15000;' "$TMP_ROOT/index.out"
 grep -q 'new EventSource("/api/events")' "$TMP_ROOT/index.out"
-grep -q 'pollCount += 1;' "$TMP_ROOT/index.out"
 grep -q 'new Intl.DateTimeFormat(undefined,' "$TMP_ROOT/index.out"
+grep -q 'hour: "numeric"' "$TMP_ROOT/index.out"
+! grep -q 'timeZoneName:' "$TMP_ROOT/index.out"
+! grep -q 'poll #' "$TMP_ROOT/index.out"
 grep -q '>Queue<' "$TMP_ROOT/index.out"
 grep -q '>Current Status<' "$TMP_ROOT/index.out"
 grep -q '>Current Stage<' "$TMP_ROOT/index.out"
-grep -q '>Runner Updated<' "$TMP_ROOT/index.out"
+! grep -q '>Runner Updated<' "$TMP_ROOT/index.out"
 grep -q '>Last Poll<' "$TMP_ROOT/index.out"
+grep -q '>Past Work<' "$TMP_ROOT/index.out"
+grep -q '<details class="panel" open>' "$TMP_ROOT/index.out"
+grep -q 'id="pastWork"' "$TMP_ROOT/index.out"
+grep -q 'renderPastWork(data.past_work);' "$TMP_ROOT/index.out"
 ! grep -q '>Browser Time Zone<' "$TMP_ROOT/index.out"
 grep -q '>Blocked<' "$TMP_ROOT/index.out"
 ! grep -q '>Iteration<' "$TMP_ROOT/index.out"

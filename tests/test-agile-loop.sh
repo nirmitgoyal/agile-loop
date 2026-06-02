@@ -271,6 +271,38 @@ assert_all_fresh_sessions() {
   ' "$file"
 }
 
+assert_session_sequence() {
+  local file="$1"
+  shift
+  local actual expected
+  actual="$(sed 's/ exec=1 ephemeral=1 resume=0$//' "$file")"
+  expected="$(printf '%s\n' "$@")"
+  if [ "$actual" != "$expected" ]; then
+    echo "Expected exact fresh Codex session sequence in $file" >&2
+    echo "---- expected ----" >&2
+    printf '%s\n' "$expected" >&2
+    echo "---- actual ----" >&2
+    printf '%s\n' "$actual" >&2
+    exit 1
+  fi
+}
+
+assert_prompts_include_session_contract() {
+  local repo="$1"
+  local prompt
+  local found="0"
+  while IFS= read -r prompt; do
+    found="1"
+    assert_contains "$prompt" "This is a fresh Codex session for exactly this Agile Loop stage."
+    assert_contains "$prompt" "Do not rely on previous child-session chat history."
+    assert_contains "$prompt" "Do not use codex resume."
+  done < <(find "$repo/.agile-loop/runs" -name '*.prompt.md' -print)
+  if [ "$found" != "1" ]; then
+    echo "Expected prompt files under $repo/.agile-loop/runs" >&2
+    exit 1
+  fi
+}
+
 run_case() {
   local name="$1"
   local critical="$2"
@@ -365,6 +397,15 @@ fi
 
 repo_zero="$(run_case zero-findings 0 0 0 0 0)"
 assert_all_fresh_sessions "$repo_zero/codex.log"
+assert_session_sequence "$repo_zero/codex.log" \
+  plan \
+  implement \
+  coderabbit-pass-1 \
+  gstack-review \
+  qa-only \
+  coderabbit-pass-2 \
+  ship
+assert_prompts_include_session_contract "$repo_zero"
 assert_not_contains "$repo_zero/codex.log" "remediate-coderabbit"
 assert_not_contains "$repo_zero/codex.log" "remediate-qa"
 [ "$(status_of "$repo_zero/docs/agile-loop/tasks/001-test.md")" = "done" ]
@@ -378,12 +419,33 @@ assert_not_contains "$repo_zero/git.log" "^pull "
 
 repo_cr="$(run_case coderabbit-blockers 1 0 0 0 0)"
 assert_all_fresh_sessions "$repo_cr/codex.log"
+assert_session_sequence "$repo_cr/codex.log" \
+  plan \
+  implement \
+  coderabbit-pass-1 \
+  remediate-coderabbit \
+  gstack-review \
+  qa-only \
+  coderabbit-pass-2 \
+  remediate-coderabbit \
+  ship
+assert_prompts_include_session_contract "$repo_cr"
 assert_contains "$repo_cr/codex.log" "remediate-coderabbit"
 [ "$(status_of "$repo_cr/docs/agile-loop/tasks/001-test.md")" = "done" ]
 assert_json_value "$repo_cr/.agile-loop/status.json" status completed
 
 repo_qa="$(run_case qa-issues 0 0 2 0 0)"
 assert_all_fresh_sessions "$repo_qa/codex.log"
+assert_session_sequence "$repo_qa/codex.log" \
+  plan \
+  implement \
+  coderabbit-pass-1 \
+  gstack-review \
+  qa-only \
+  remediate-qa \
+  coderabbit-pass-2 \
+  ship
+assert_prompts_include_session_contract "$repo_qa"
 assert_contains "$repo_qa/codex.log" "remediate-qa"
 [ "$(status_of "$repo_qa/docs/agile-loop/tasks/001-test.md")" = "done" ]
 assert_json_value "$repo_qa/.agile-loop/status.json" status completed

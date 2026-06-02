@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 
 POLL_INTERVAL_MS = 15000
+PAST_WORK_LIMIT = 5
 
 
 HTML = r"""<!doctype html>
@@ -144,6 +145,28 @@ HTML = r"""<!doctype html>
       justify-self: start;
     }
 
+    .summary-label {
+      cursor: pointer;
+      list-style: none;
+    }
+
+    .summary-label::-webkit-details-marker {
+      display: none;
+    }
+
+    .summary-label::after {
+      content: "Show";
+      float: right;
+      color: #16181d;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    details[open] .summary-label::after {
+      content: "Hide";
+    }
+
     .blocked-panel {
       border-color: #c93636;
       background: #fff7f7;
@@ -185,6 +208,10 @@ HTML = r"""<!doctype html>
         color: #9aa4b2;
       }
 
+      .summary-label::after {
+        color: #eef2f8;
+      }
+
       .queue-item {
         border-top-color: #2a303c;
       }
@@ -207,6 +234,13 @@ HTML = r"""<!doctype html>
       </ul>
     </section>
 
+    <details class="panel" open>
+      <summary class="label summary-label">Past Work</summary>
+      <ul id="pastWork" class="queue">
+        <li class="value">Loading</li>
+      </ul>
+    </details>
+
     <section class="grid" aria-live="polite">
       <article class="panel">
         <p class="label">Current Status</p>
@@ -215,10 +249,6 @@ HTML = r"""<!doctype html>
       <article class="panel">
         <p class="label">Current Stage</p>
         <p id="currentStage" class="value">-</p>
-      </article>
-      <article class="panel">
-        <p class="label">Runner Updated</p>
-        <p id="updatedAt" class="value">-</p>
       </article>
       <article class="panel">
         <p class="label">Last Poll</p>
@@ -233,15 +263,10 @@ HTML = r"""<!doctype html>
 
   <script>
     const POLL_INTERVAL_MS = __POLL_INTERVAL_MS__;
-    let pollCount = 0;
-    const localDateTimeFormatter = new Intl.DateTimeFormat(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
+    const localTimeFormatter = new Intl.DateTimeFormat(undefined, {
       hour: "numeric",
       minute: "2-digit",
       second: "2-digit",
-      timeZoneName: "short",
     });
 
     function valueOrDash(value) {
@@ -257,22 +282,22 @@ HTML = r"""<!doctype html>
       if (!value) return "-";
       const date = value instanceof Date ? value : new Date(value);
       if (Number.isNaN(date.getTime())) return valueOrDash(value);
-      return localDateTimeFormatter.format(date);
+      return localTimeFormatter.format(date);
     }
 
-    function renderQueue(queue) {
-      const queueElement = document.getElementById("queue");
-      queueElement.replaceChildren();
+    function renderTaskList(elementId, tasks, emptyText) {
+      const listElement = document.getElementById(elementId);
+      listElement.replaceChildren();
 
-      if (!Array.isArray(queue) || queue.length === 0) {
+      if (!Array.isArray(tasks) || tasks.length === 0) {
         const item = document.createElement("li");
         item.className = "value";
-        item.textContent = "No queued tasks.";
-        queueElement.appendChild(item);
+        item.textContent = emptyText;
+        listElement.appendChild(item);
         return;
       }
 
-      queue.forEach((task) => {
+      tasks.forEach((task) => {
         const item = document.createElement("li");
         item.className = "queue-item";
 
@@ -286,8 +311,16 @@ HTML = r"""<!doctype html>
         status.textContent = statusText;
 
         item.append(title, status);
-        queueElement.appendChild(item);
+        listElement.appendChild(item);
       });
+    }
+
+    function renderQueue(queue) {
+      renderTaskList("queue", queue, "No queued tasks.");
+    }
+
+    function renderPastWork(pastWork) {
+      renderTaskList("pastWork", pastWork, "No past work.");
     }
 
     function blockedReason(data) {
@@ -304,13 +337,12 @@ HTML = r"""<!doctype html>
     }
 
     function render(data) {
-      pollCount += 1;
       const status = valueOrDash(data.status).toLowerCase();
       renderQueue(data.queue);
+      renderPastWork(data.past_work);
       setText("currentStatus", status);
       setText("currentStage", data.stage);
-      setText("updatedAt", formatLocalTime(data.updated_at));
-      setText("refreshedAt", `${formatLocalTime(new Date())} (poll #${pollCount})`);
+      setText("refreshedAt", formatLocalTime(new Date()));
 
       const reason = blockedReason(data);
       const blockedPanel = document.getElementById("blockedPanel");
@@ -419,8 +451,29 @@ def load_queue(repo: Path, queue_glob: str) -> list[dict[str, str]]:
     return queue
 
 
+def load_past_work(repo: Path, queue_glob: str) -> list[dict[str, str]]:
+    past_work: list[dict[str, str]] = []
+    for path in reversed(task_paths(repo, queue_glob)):
+        metadata = read_frontmatter(path)
+        status = metadata.get("status", "unknown")
+        if status != "done":
+            continue
+
+        past_work.append(
+            {
+                "file": str(path),
+                "title": metadata.get("title") or path.stem,
+                "status": status,
+            }
+        )
+        if len(past_work) == PAST_WORK_LIMIT:
+            break
+    return past_work
+
+
 def add_queue(data: dict[str, Any], repo: Path, queue_glob: str) -> dict[str, Any]:
     data["queue"] = load_queue(repo, queue_glob)
+    data["past_work"] = load_past_work(repo, queue_glob)
     return data
 
 
