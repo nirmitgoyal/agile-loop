@@ -1,53 +1,32 @@
 # Agile Loop
 
-Agile Loop is an agent workflow skill for Claude Code, Codex, Anti-gravity, and similar coding agents. It runs an autonomous engineering queue with fresh child sessions for each major stage: planning, implementation, review, QA, shipping, human merge, and release documentation.
+Agile Loop runs a queued engineering loop for agent-assisted repos:
+GStack spec -> GSD phase -> Superpowers plan -> implementation -> review/QA ->
+ship -> human merge.
 
-The workflow is meant to be portable across agent hosts, but the maintained runner is very Codex-specific right now: it invokes `codex exec --ephemeral`, uses Codex CLI flags, and assumes Codex-style skill prompts. The queue format, prompt contracts, dashboard, and stage ordering are deliberately simple, so adapting it for Claude Code should mostly mean swapping in a Claude child-session adapter and adjusting prompt/tool names.
-
-It combines three complementary skill families:
-
-- GStack creates specs through role-based product and engineering review.
-- GSD turns those specs into smaller phases so each execution session starts with a focused context window.
-- Superpowers turns each phase into a concrete plan and executes it with test-first, subagent-driven development.
-
-Vocabulary matters in this repo: GStack produces specs, GSD produces phases, and Superpowers produces plans.
-
-## Workflow
-
-![Agile Loop workflow](docs/agile-loop-diagram.png)
-
-The diagram shows the full loop:
-
-- Discovery and planning start with Office Hours, Auto Plan, CEO Review, and Eng Review.
-- Design and planning convert product intent into GStack specs, GSD phases, and Superpowers plans.
-- Execution runs in fresh agent sessions with CodeRabbit, GStack review, QA, investigation, ship, merge, and document-release gates.
-- Retro, Learn, and Document Release feed the next cycle.
-
-## Requirements
-
-- An agent runtime capable of launching isolated/headless child sessions.
-- For the included shell runner: Codex CLI available on `PATH` as `codex`.
-- Python 3 for dashboard/status helpers.
-- GitHub CLI available as `gh` for PR polling.
-- Git available as `git`.
-- The target repo should have the skills used by the prompts installed or available to your agent host: GStack, GSD, Superpowers, and CodeRabbit.
-
-The runner defaults to `gpt-5.5` for planning/review/QA/ship and `gpt-5.4` for implementation. Override them with `--default-model`, `--implementation-model`, and `--review-model`.
+The maintained runner is Codex-specific and launches fresh child sessions with
+`codex exec --ephemeral`. The installer can copy the skill into Codex, Claude
+Code, or Antigravity, but non-Codex hosts need their own runner adapter.
 
 ## Install
-
-One-command install auto-detects supported hosts on your machine:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash
 ```
 
-Pass `--upgrade` to replace an existing install, and `--dry-run` to print destinations without writing.
+Useful flags: `--host codex|claude|antigravity|all`, `--scope user|project`,
+`--upgrade`, `--dry-run`.
 
+## Requirements
 
-## Queue Format
+- Codex CLI on `PATH` as `codex`.
+- Python 3 for the dashboard.
+- `git` and GitHub CLI `gh`.
+- GStack, GSD, Superpowers, and CodeRabbit skills available in the target repo.
 
-Create one Markdown file per task under `docs/agile-loop/tasks/` in the target repo:
+## Tasks
+
+Create one Markdown file per task under `docs/agile-loop/tasks/`:
 
 ```markdown
 ---
@@ -60,22 +39,17 @@ phase: optional-gsd-phase-id
 What to build.
 
 ## Inputs
-Links to GSD phase docs, Superpowers plans, screenshots, issues, or acceptance notes.
+Links to phase docs, plans, screenshots, issues, or acceptance notes.
 
 ## Done
 Concrete acceptance criteria.
 ```
 
-Supported statuses:
-
-- `todo`: ready for the next loop iteration.
-- `doing`: claimed by the current loop.
-- `done`: PR was merged by a human.
-- `blocked`: a child session blocked, tests failed, a PR was closed unmerged, or mandatory human judgment was required.
+Statuses: `todo`, `doing`, `done`, `blocked`.
 
 ## Run
 
-Always start with a dry run:
+Start with a dry run:
 
 ```bash
 ~/.codex/skills/agile-loop/scripts/agile-loop.sh \
@@ -85,7 +59,7 @@ Always start with a dry run:
   --dry-run
 ```
 
-With the included Codex adapter, real execution launches fresh child sessions with approval and sandbox bypass. This is intentionally gated:
+Run the loop:
 
 ```bash
 ~/.codex/skills/agile-loop/scripts/agile-loop.sh \
@@ -96,9 +70,10 @@ With the included Codex adapter, real execution launches fresh child sessions wi
   --unsafe-bypass-approvals
 ```
 
-You can also set `AGILE_LOOP_UNSAFE_BYPASS=1` instead of passing the flag.
+You can set `AGILE_LOOP_UNSAFE_BYPASS=1` instead of passing
+`--unsafe-bypass-approvals`.
 
-Start the dashboard in another terminal:
+Start the dashboard:
 
 ```bash
 ~/.codex/skills/agile-loop/scripts/agile-dashboard.py \
@@ -106,36 +81,31 @@ Start the dashboard in another terminal:
   --port 8765
 ```
 
-The dashboard serves `http://127.0.0.1:8765` by default and refreshes the runner status every 15 seconds. It uses a server-side event stream so hidden browser tabs do not fall back to one-minute timer throttling. It shows the active queue, current status, current stage, runner update time, last poll time, and blocked reason.
+It serves `http://127.0.0.1:8765` and reads `.agile-loop/status.json`.
 
-![Agile Loop live dashboard](docs/agile-loop-dashboard.png)
+## Contract
 
-## Loop Contract
+For each `todo` task, the runner plans, implements, runs CodeRabbit, runs
+`/review`, runs `/qa-only mode: full`, fixes only actual findings, runs
+CodeRabbit again, runs `/ship`, waits for a human merge, then syncs the base
+branch:
 
-For each `todo` task, the included Codex runner performs one fresh `codex exec --ephemeral` invocation per agent-backed step:
+```bash
+git pull --rebase origin <base>
+```
 
-1. Convert the GSD phase/task into a Superpowers implementation plan.
-2. Execute the plan with `superpowers:subagent-driven-development`.
-3. Run `coderabbit:code-review`.
-4. Fix only Critical or Major CodeRabbit findings with scoped subagents.
-5. Run `/review`.
-6. Run `/qa-only mode: full`.
-7. Fix QA issues with `/investigate` and scoped subagents.
-8. Run CodeRabbit again.
-9. Fix remaining Critical or Major findings only.
-10. Run `/ship`.
-11. Poll the PR until a human merges it, then sync the base branch and mark the task `done`.
-
-Every failed stage gets three exponential-backoff retries before the task is blocked. Set `AGILE_LOOP_RETRY_INITIAL_SECONDS` to override the first retry delay. `RALPH_LOOP_RETRY_INITIAL_SECONDS` is still accepted for older setups.
-
-## Guardrails
+Guardrails:
 
 - Keep one PR per queued task.
-- Stop on `BLOCKED`, `NEEDS_CONTEXT`, failed tests, missing authentication, mandatory user judgment, or closed-unmerged PR state.
-- Delegate fixes only after CodeRabbit or QA findings exist.
-- Keep remediation scoped to the finding source.
-- Do not skip the human merge gate.
-- Do not mark a task `done` until the configured base branch has synced with `origin/<base>` using `git pull --rebase`.
+- Stop on `BLOCKED`, `NEEDS_CONTEXT`, failed tests, missing auth, mandatory human
+  judgment, or closed-unmerged PR state.
+- Do not fix CodeRabbit or QA issues until findings exist.
+- Keep fixes scoped to the finding source.
+- Do not mark a task `done` until the base branch has synced with
+  `origin/<base>`.
+
+Every failed stage gets three exponential-backoff retries. Set
+`AGILE_LOOP_RETRY_INITIAL_SECONDS` to override the first retry delay.
 
 ## Tests
 
@@ -147,5 +117,3 @@ tests/test-agile-loop.sh
 tests/test-install.sh
 tests/test-agile-dashboard.sh
 ```
-
-The runner tests use fake `codex`, `gh`, and `git` commands. The installer tests use temporary home/project directories. The dashboard test binds a local HTTP server.
