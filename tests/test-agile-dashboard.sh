@@ -104,8 +104,22 @@ body = urlopen(sys.argv[1], timeout=5).read().decode()
 Path(sys.argv[2]).write_text(body)
 PY
 
+python3 - "$url/api/events" "$TMP_ROOT/events.out" <<'PY'
+import sys
+from pathlib import Path
+from urllib.request import urlopen
+
+with urlopen(sys.argv[1], timeout=5) as response:
+    chunk = b""
+    while b"\n\n" not in chunk:
+        chunk += response.read(1)
+
+Path(sys.argv[2]).write_bytes(chunk)
+PY
+
 grep -q '"status": "running"' "$TMP_ROOT/status.out"
 grep -q '"stage": "01-plan"' "$TMP_ROOT/status.out"
+grep -q '^data: ' "$TMP_ROOT/events.out"
 python3 - "$TMP_ROOT/status.out" <<'PY'
 import json
 import sys
@@ -120,9 +134,15 @@ blocked = next(item for item in data["queue"] if item["title"] == "Blocked task"
 assert blocked["blocked_reason"] == "Needs user answer"
 PY
 grep -q 'const POLL_INTERVAL_MS = 15000;' "$TMP_ROOT/index.out"
+grep -q 'new EventSource("/api/events")' "$TMP_ROOT/index.out"
+grep -q 'pollCount += 1;' "$TMP_ROOT/index.out"
+grep -q 'new Intl.DateTimeFormat(undefined,' "$TMP_ROOT/index.out"
 grep -q '>Queue<' "$TMP_ROOT/index.out"
 grep -q '>Current Status<' "$TMP_ROOT/index.out"
 grep -q '>Current Stage<' "$TMP_ROOT/index.out"
+grep -q '>Runner Updated<' "$TMP_ROOT/index.out"
+grep -q '>Last Poll<' "$TMP_ROOT/index.out"
+! grep -q '>Browser Time Zone<' "$TMP_ROOT/index.out"
 grep -q '>Blocked<' "$TMP_ROOT/index.out"
 ! grep -q '>Iteration<' "$TMP_ROOT/index.out"
 ! grep -q '>Details<' "$TMP_ROOT/index.out"

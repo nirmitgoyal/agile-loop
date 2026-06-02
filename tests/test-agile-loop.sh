@@ -95,6 +95,10 @@ if [ -n "${FAKE_FAIL_STAGE:-}" ] && [ "$stage" = "$FAKE_FAIL_STAGE" ]; then
   fi
 fi
 
+if [ -n "${FAKE_SLEEP_STAGE:-}" ] && [ "$stage" = "$FAKE_SLEEP_STAGE" ]; then
+  sleep "${FAKE_SLEEP_SECONDS:-1}"
+fi
+
 case "$stage" in
   coderabbit-pass-1|coderabbit-pass-2)
     printf 'CodeRabbit fake output\n{"critical":%s,"major":%s,"minor":0,"blocked":false,"summary":"fake"}\n' "${FAKE_CRITICAL:-0}" "${FAKE_MAJOR:-0}" > "$out"
@@ -207,6 +211,24 @@ assert_json_value() {
     echo "Expected $file $key to be $expected, got $actual" >&2
     exit 1
   fi
+}
+
+wait_for_json_value() {
+  local file="$1"
+  local key="$2"
+  local expected="$3"
+  local attempts="${4:-50}"
+
+  for _ in $(seq 1 "$attempts"); do
+    if [ -f "$file" ] && [ "$(json_value "$file" "$key")" = "$expected" ]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  echo "Expected $file $key to become $expected" >&2
+  [ ! -f "$file" ] || cat "$file" >&2
+  exit 1
 }
 
 assert_contains() {
@@ -370,6 +392,46 @@ assert_contains "$repo_retry/run.out" "02-implement session failed with exit 42;
 assert_contains "$repo_retry/run.out" "02-implement session failed with exit 42; retry 2/3"
 [ "$(status_of "$repo_retry/docs/agile-loop/tasks/001-test.md")" = "done" ]
 assert_json_value "$repo_retry/.agile-loop/status.json" status completed
+
+repo_heartbeat="$TMP_ROOT/status-heartbeat"
+make_repo "$repo_heartbeat"
+write_fake_codex "$repo_heartbeat"
+write_fake_gh "$repo_heartbeat"
+write_fake_git "$repo_heartbeat"
+FAKE_CODEX_LOG="$repo_heartbeat/codex.log" \
+FAKE_GIT_LOG="$repo_heartbeat/git.log" \
+FAKE_SLEEP_STAGE="plan" \
+FAKE_SLEEP_SECONDS="4" \
+AGILE_LOOP_STATUS_HEARTBEAT_INTERVAL="1" \
+AGILE_LOOP_RETRY_INITIAL_SECONDS="0" \
+CODEX_BIN="$repo_heartbeat/bin/codex" \
+GH_BIN="$repo_heartbeat/bin/gh" \
+GIT_BIN="$repo_heartbeat/bin/git" \
+"$RUNNER" --repo "$repo_heartbeat" --base main --max-iterations 1 --poll-interval 1 --poll-timeout 2 --unsafe-bypass-approvals > "$repo_heartbeat/run.out" 2>&1 &
+heartbeat_pid="$!"
+
+wait_for_json_value "$repo_heartbeat/.agile-loop/status.json" stage "01-plan"
+heartbeat_started_at="$(json_value "$repo_heartbeat/.agile-loop/status.json" updated_at)"
+sleep 2
+heartbeat_mid_stage="$(json_value "$repo_heartbeat/.agile-loop/status.json" stage)"
+heartbeat_mid_status="$(json_value "$repo_heartbeat/.agile-loop/status.json" stage_status)"
+heartbeat_mid_updated_at="$(json_value "$repo_heartbeat/.agile-loop/status.json" updated_at)"
+if [ "$heartbeat_mid_stage" != "01-plan" ] || [ "$heartbeat_mid_status" != "running" ]; then
+  cat "$repo_heartbeat/run.out" >&2
+  echo "Expected heartbeat case to still be running 01-plan" >&2
+  exit 1
+fi
+if [ "$heartbeat_started_at" = "$heartbeat_mid_updated_at" ]; then
+  cat "$repo_heartbeat/.agile-loop/status.json" >&2
+  echo "Expected status heartbeat to refresh updated_at while child stage runs" >&2
+  exit 1
+fi
+if ! wait "$heartbeat_pid"; then
+  cat "$repo_heartbeat/run.out" >&2
+  echo "Heartbeat case failed unexpectedly" >&2
+  exit 1
+fi
+assert_json_value "$repo_heartbeat/.agile-loop/status.json" status completed
 
 repo_retry_exhausted="$(run_case exhausted-implement-retry 0 0 0 0 1 implement 4)"
 assert_all_fresh_sessions "$repo_retry_exhausted/codex.log"

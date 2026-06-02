@@ -106,7 +106,7 @@ Start the dashboard in another terminal:
   --port 8765
 ```
 
-The dashboard serves `http://127.0.0.1:8765` by default and shows the active queue, current status, current stage, and blocked reason.
+The dashboard serves `http://127.0.0.1:8765` by default and refreshes the runner status every 15 seconds. It uses a server-side event stream so hidden browser tabs do not fall back to one-minute timer throttling. It shows the active queue, current status, current stage, runner update time, last poll time, and blocked reason.
 
 ## Loop Contract
 

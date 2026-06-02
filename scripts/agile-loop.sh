@@ -9,6 +9,7 @@ POLL_TIMEOUT="0"
 QUEUE_GLOB="docs/agile-loop/tasks/*.md"
 STATE_ROOT=".agile-loop/runs"
 STATUS_FILE=".agile-loop/status.json"
+STATUS_HEARTBEAT_INTERVAL="${AGILE_LOOP_STATUS_HEARTBEAT_INTERVAL:-15}"
 DEFAULT_MODEL="gpt-5.5"
 IMPLEMENTATION_MODEL="gpt-5.4"
 REVIEW_MODEL="gpt-5.5"
@@ -123,6 +124,7 @@ write_status() {
     "$pr_url" \
     "$DRY_RUN" <<'PY'
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -189,10 +191,39 @@ payload = {
 }
 
 status_path.parent.mkdir(parents=True, exist_ok=True)
-tmp_path = status_path.with_name(status_path.name + ".tmp")
+tmp_path = status_path.with_name(f"{status_path.name}.{os.getpid()}.tmp")
 tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 tmp_path.replace(status_path)
 PY
+}
+
+STATUS_HEARTBEAT_PID=""
+
+start_status_heartbeat() {
+  local loop_status="$1"
+  local stage="$2"
+  local stage_status="$3"
+  local message="$4"
+  local task="$5"
+  local iteration="$6"
+  local pr_url="${7:-}"
+
+  (
+    exec >/dev/null 2>&1
+    while true; do
+      sleep "$STATUS_HEARTBEAT_INTERVAL"
+      write_status "$loop_status" "$stage" "$stage_status" "$message" "$task" "$iteration" "$pr_url" || true
+    done
+  ) &
+  STATUS_HEARTBEAT_PID="$!"
+}
+
+stop_status_heartbeat() {
+  local pid="$1"
+  if [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1; then
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" >/dev/null 2>&1 || true
+  fi
 }
 
 retry_delay_for_attempt() {
@@ -452,7 +483,9 @@ run_codex_stage_once() {
 
   # Each stage is isolated; handoff must happen through prompt, repo, and output files.
   rm -f "$output_file"
-  local rc
+  local rc heartbeat_pid
+  start_status_heartbeat "running" "$stage" "running" "running $stage with $model" "$CURRENT_TASK" "$CURRENT_ITERATION"
+  heartbeat_pid="$STATUS_HEARTBEAT_PID"
   rc=0
   "$CODEX_BIN" exec \
     -C "$REPO" \
@@ -461,6 +494,7 @@ run_codex_stage_once() {
     --ephemeral \
     -o "$output_file" \
     - < "$prompt_file" > "$events_file" 2>&1 || rc=$?
+  stop_status_heartbeat "$heartbeat_pid"
   if [ "$rc" -ne 0 ]; then
     log "stage=$stage failed; see $events_file"
     write_status "running" "$stage" "failed" "$stage failed; see $events_file" "$CURRENT_TASK" "$CURRENT_ITERATION"

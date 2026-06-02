@@ -7,6 +7,7 @@ import argparse
 import glob
 import json
 import sys
+import time
 import webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -215,6 +216,14 @@ HTML = r"""<!doctype html>
         <p class="label">Current Stage</p>
         <p id="currentStage" class="value">-</p>
       </article>
+      <article class="panel">
+        <p class="label">Runner Updated</p>
+        <p id="updatedAt" class="value">-</p>
+      </article>
+      <article class="panel">
+        <p class="label">Last Poll</p>
+        <p id="refreshedAt" class="value">-</p>
+      </article>
       <article id="blockedPanel" class="panel blocked-panel" hidden>
         <p class="label">Blocked</p>
         <p id="blockedReason" class="value">-</p>
@@ -224,6 +233,16 @@ HTML = r"""<!doctype html>
 
   <script>
     const POLL_INTERVAL_MS = __POLL_INTERVAL_MS__;
+    let pollCount = 0;
+    const localDateTimeFormatter = new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZoneName: "short",
+    });
 
     function valueOrDash(value) {
       if (value === null || value === undefined || value === "") return "-";
@@ -232,6 +251,13 @@ HTML = r"""<!doctype html>
 
     function setText(id, value) {
       document.getElementById(id).textContent = valueOrDash(value);
+    }
+
+    function formatLocalTime(value) {
+      if (!value) return "-";
+      const date = value instanceof Date ? value : new Date(value);
+      if (Number.isNaN(date.getTime())) return valueOrDash(value);
+      return localDateTimeFormatter.format(date);
     }
 
     function renderQueue(queue) {
@@ -278,10 +304,13 @@ HTML = r"""<!doctype html>
     }
 
     function render(data) {
+      pollCount += 1;
       const status = valueOrDash(data.status).toLowerCase();
       renderQueue(data.queue);
       setText("currentStatus", status);
       setText("currentStage", data.stage);
+      setText("updatedAt", formatLocalTime(data.updated_at));
+      setText("refreshedAt", `${formatLocalTime(new Date())} (poll #${pollCount})`);
 
       const reason = blockedReason(data);
       const blockedPanel = document.getElementById("blockedPanel");
@@ -293,7 +322,7 @@ HTML = r"""<!doctype html>
 
     async function loadStatus() {
       try {
-        const response = await fetch("/api/status", { cache: "no-store" });
+        const response = await fetch("/api/status?ts=" + encodeURIComponent(Date.now()), { cache: "no-store" });
         render(await response.json());
       } catch (error) {
         render({
@@ -305,8 +334,23 @@ HTML = r"""<!doctype html>
       }
     }
 
-    loadStatus();
-    setInterval(loadStatus, POLL_INTERVAL_MS);
+    function startPollingFallback() {
+      loadStatus();
+      setInterval(loadStatus, POLL_INTERVAL_MS);
+    }
+
+    if ("EventSource" in window) {
+      const events = new EventSource("/api/events");
+      events.onmessage = (event) => {
+        render(JSON.parse(event.data));
+      };
+      events.onerror = () => {
+        events.close();
+        startPollingFallback();
+      };
+    } else {
+      startPollingFallback();
+    }
   </script>
 </body>
 </html>
@@ -447,12 +491,34 @@ def make_handler(repo: Path, status_path: Path, queue_glob: str) -> type[BaseHTT
                 )
                 self.send_payload("application/json; charset=utf-8", payload)
                 return
+            if path == "/api/events":
+                self.stream_events()
+                return
             self.send_error(404, "Not found")
+
+        def stream_events(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            self.end_headers()
+
+            while True:
+                payload = json.dumps(load_status(repo, status_path, queue_glob), sort_keys=True)
+                try:
+                    self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                time.sleep(POLL_INTERVAL_MS / 1000)
 
         def send_payload(self, content_type: str, payload: bytes) -> None:
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
