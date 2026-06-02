@@ -156,12 +156,18 @@ set -euo pipefail
 printf '%s\n' "$*" >> "${FAKE_GIT_LOG:?}"
 
 case "${1:-}" in
+  rev-parse)
+    exit 0
+    ;;
+  fetch)
+    exit 0
+    ;;
   switch)
     exit 0
     ;;
-  pull)
+  merge)
     if [ "${FAKE_GIT_FAIL_PULL:-0}" = "1" ]; then
-      echo "fake git pull failure" >&2
+      echo "fake git fast-forward failure" >&2
       exit 7
     fi
     exit 0
@@ -365,8 +371,10 @@ assert_not_contains "$repo_zero/codex.log" "remediate-qa"
 assert_json_value "$repo_zero/.agile-loop/status.json" status completed
 assert_json_value "$repo_zero/.agile-loop/status.json" stage complete
 assert_json_value "$repo_zero/.agile-loop/status.json" task_title "Test task"
+assert_contains "$repo_zero/git.log" "^fetch origin +refs/heads/main:refs/remotes/origin/main$"
 assert_contains "$repo_zero/git.log" "^switch main$"
-assert_contains "$repo_zero/git.log" "^pull --rebase origin main$"
+assert_contains "$repo_zero/git.log" "^merge --ff-only refs/remotes/origin/main$"
+assert_not_contains "$repo_zero/git.log" "^pull "
 
 repo_cr="$(run_case coderabbit-blockers 1 0 0 0 0)"
 assert_all_fresh_sessions "$repo_cr/codex.log"
@@ -452,12 +460,14 @@ assert_all_fresh_sessions "$repo_closed/codex.log"
 assert_json_value "$repo_closed/.agile-loop/status.json" status blocked
 assert_json_value "$repo_closed/.agile-loop/status.json" stage poll-merge
 
-repo_sync_failed="$(run_case sync-pull-fails 0 0 0 0 1 "" 0 1)"
+repo_sync_failed="$(run_case sync-fast-forward-fails 0 0 0 0 1 "" 0 1)"
 assert_all_fresh_sessions "$repo_sync_failed/codex.log"
 [ "$(status_of "$repo_sync_failed/docs/agile-loop/tasks/001-test.md")" = "blocked" ]
 assert_json_value "$repo_sync_failed/.agile-loop/status.json" status blocked
 assert_json_value "$repo_sync_failed/.agile-loop/status.json" stage sync-base
+assert_contains "$repo_sync_failed/git.log" "^fetch origin +refs/heads/main:refs/remotes/origin/main$"
 assert_contains "$repo_sync_failed/git.log" "^switch main$"
-assert_contains "$repo_sync_failed/git.log" "^pull --rebase origin main$"
+assert_contains "$repo_sync_failed/git.log" "^merge --ff-only refs/remotes/origin/main$"
+assert_not_contains "$repo_sync_failed/git.log" "^pull "
 
 echo "agile-loop runner tests passed"

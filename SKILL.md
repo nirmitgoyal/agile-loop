@@ -97,7 +97,7 @@ For each `todo` task, run this sequence in separate agent sessions. The included
 8. Run CodeRabbit again using `gpt-5.5`.
 9. Only if Critical or Major CodeRabbit issues remain, fix them with scoped sub-agents.
 10. Run `/ship` using `gpt-5.5`.
-11. Poll the PR until a human merges it. Then switch to the base branch and run `git pull --rebase origin <base>` so local `main` catches up with `origin/main`, mark the task `done`, and continue.
+11. Poll the PR until a human merges it. Then fetch `origin/<base>`, switch to the base branch, fast-forward local `<base>` to `refs/remotes/origin/<base>`, mark the task `done`, and continue.
 
 Every failed loop stage gets 3 exponential-backoff retries before the task is blocked. Command failures, empty child-session output, and missing final JSON lines in JSON-contract stages are retryable; explicit `BLOCKED` or `NEEDS_CONTEXT` child-session results still stop immediately.
 
@@ -111,7 +111,7 @@ Read `references/prompts.md` before changing the runner prompt wording. The runn
 - Keep remediation scoped to the finding source. Do not broaden into cleanup.
 - Prefer repo guidance from `AGENTS.md` when present.
 - Do not skip the human merge gate. The loop continues only after the PR is merged.
-- Do not mark a task `done` until the configured base branch has successfully synced with `origin/<base>` using `git pull --rebase`.
+- Do not mark a task `done` until the configured base branch has successfully fast-forwarded to `origin/<base>`. Do not use a post-merge rebase to replay local base-branch commits.
 
 ## Runner Files
 

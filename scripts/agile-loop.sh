@@ -559,28 +559,56 @@ poll_until_merged() {
   done
 }
 
+git_operation_in_progress() {
+  local state
+  local path
+
+  for state in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
+    path="$("$GIT_BIN" rev-parse --git-path "$state" 2>/dev/null || true)"
+    if [ -n "$path" ] && [ -e "$path" ]; then
+      printf '%s\n' "$state"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 sync_base_after_merge() {
   local task="$1"
+  local git_state=""
+  local remote_ref="refs/remotes/origin/$BASE"
+  local fetch_ref="+refs/heads/$BASE:$remote_ref"
   CURRENT_STAGE="sync-base"
 
   if [ "$DRY_RUN" = "1" ]; then
-    write_status "dry_run" "sync-base" "skipped" "dry-run would sync $BASE with origin/$BASE using git pull --rebase" "$task" "$CURRENT_ITERATION"
-    echo "DRY RUN: would run git switch $BASE && git pull --rebase origin $BASE"
+    write_status "dry_run" "sync-base" "skipped" "dry-run would sync $BASE with origin/$BASE using fetch and fast-forward" "$task" "$CURRENT_ITERATION"
+    echo "DRY RUN: would run git fetch origin $fetch_ref && git switch $BASE && git merge --ff-only $remote_ref"
     return 0
   fi
 
   command -v "$GIT_BIN" >/dev/null 2>&1 || mark_blocked_and_stop "$task" "git is required to sync $BASE after PR merge"
-  write_status "running" "sync-base" "running" "syncing $BASE with origin/$BASE using git pull --rebase" "$task" "$CURRENT_ITERATION"
+  write_status "running" "sync-base" "running" "syncing $BASE with origin/$BASE using fetch and fast-forward" "$task" "$CURRENT_ITERATION"
+
+  git_state="$(git_operation_in_progress || true)"
+  if [ -n "$git_state" ]; then
+    mark_blocked_and_stop "$task" "cannot sync $BASE while git operation is in progress ($git_state); resolve or abort it first"
+  fi
+
+  if ! "$GIT_BIN" fetch origin "$fetch_ref"; then
+    mark_blocked_and_stop "$task" "failed to fetch origin/$BASE before post-merge sync"
+  fi
 
   if ! "$GIT_BIN" switch "$BASE"; then
     mark_blocked_and_stop "$task" "failed to switch to $BASE before post-merge sync"
   fi
-  if ! "$GIT_BIN" pull --rebase origin "$BASE"; then
-    mark_blocked_and_stop "$task" "failed to sync $BASE with origin/$BASE using git pull --rebase"
+
+  if ! "$GIT_BIN" merge --ff-only "$remote_ref"; then
+    mark_blocked_and_stop "$task" "failed to fast-forward $BASE to origin/$BASE; local $BASE has commits not on origin/$BASE or conflicting worktree state"
   fi
 
-  log "synced $BASE with origin/$BASE using git pull --rebase"
-  write_status "running" "sync-base" "completed" "synced $BASE with origin/$BASE using git pull --rebase" "$task" "$CURRENT_ITERATION"
+  log "synced $BASE with origin/$BASE using fetch and fast-forward"
+  write_status "running" "sync-base" "completed" "synced $BASE with origin/$BASE using fetch and fast-forward" "$task" "$CURRENT_ITERATION"
 }
 
 build_plan_prompt() {
