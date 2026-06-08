@@ -1,6 +1,6 @@
 # Agile Loop Prompt Contracts
 
-Agile Loop uses these prompt shapes for fresh child agent sessions. The included shell runner currently sends them through `codex exec --ephemeral`. Keep final JSON lines intact; the shell runner uses them for branching and retries JSON-contract stages when the final JSON line is missing. Child sessions must reconstruct context from the repository, task file, and explicit output files rather than prior session history.
+Agile Loop uses these prompt shapes for fresh child agent sessions. Both supported adapters template the same shapes: the Codex adapter (`scripts/agile-loop.sh`) sends them through `codex exec --ephemeral`, and the Claude Code adapter (`SKILL.md`) sends them through `claude -p`. Keep final JSON lines intact; adapters use them for branching and retry JSON-contract stages when the final JSON line is missing. Child sessions must reconstruct context from the repository, task file, and explicit output files rather than prior session history.
 
 ## Planning Session
 
@@ -14,7 +14,7 @@ Base branch: {base}
 Task file: {task_file}
 
 Session isolation:
-This is a fresh Codex session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not use codex resume.
+This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
 Read AGENTS.md and the task file first. Use the Superpowers writing-plans skill to convert the task into a decision-complete implementation plan. Save the plan in the repo's normal Superpowers plan location unless the task file specifies a stronger location.
 
@@ -35,7 +35,7 @@ Base branch: {base}
 Task file: {task_file}
 
 Session isolation:
-This is a fresh Codex session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not use codex resume.
+This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
 Use superpowers:subagent-driven-development to execute the current Superpowers plan task-by-task. Keep changes scoped to the plan. Run the plan's verification commands. Do not ship or create a PR.
 
@@ -56,7 +56,7 @@ Base branch: {base}
 Task file: {task_file}
 
 Session isolation:
-This is a fresh Codex session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not use codex resume.
+This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
 Use coderabbit:code-review. Run CodeRabbit against the current branch, passing AGENTS.md as review context when available. Do not apply fixes in this stage.
 
@@ -78,7 +78,7 @@ Review output file: {review_output}
 Maximum remediation sub-agents: {max_parallel_remediation}
 
 Session isolation:
-This is a fresh Codex session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not use codex resume.
+This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
 Read the CodeRabbit output. Only if it contains Critical or Major issues, spawn scoped sub-agents to fix those issues. Keep each sub-agent's write scope disjoint and tied to one finding or file group. Do not fix Minor issues unless they are necessary for a Critical or Major fix.
 
@@ -98,7 +98,7 @@ Base branch: {base}
 Task file: {task_file}
 
 Session isolation:
-This is a fresh Codex session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not use codex resume.
+This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
 Use /review. Apply auto-fixes and handle the workflow exactly as the skill requires. Stop with BLOCKED if /review needs mandatory human judgment.
 End with:
@@ -117,7 +117,7 @@ Base branch: {base}
 Task file: {task_file}
 
 Session isolation:
-This is a fresh Codex session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not use codex resume.
+This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
 Use /qa-only with mode: full. This stage is report-only: do not fix. Prefer the running local app and the task/plan verification steps. Include paths to the QA report.
 
@@ -139,7 +139,7 @@ QA output file: {qa_output}
 Maximum remediation sub-agents: {max_parallel_remediation}
 
 Session isolation:
-This is a fresh Codex session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not use codex resume.
+This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
 Read the QA report. Only if it contains issues, spawn scoped sub-agents using /investigate to root-cause and fix them. Keep each fix scoped to a reproducible QA issue.
 
@@ -159,7 +159,7 @@ Base branch: {base}
 Task file: {task_file}
 
 Session isolation:
-This is a fresh Codex session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not use codex resume.
+This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
 Use /ship. Run the full ship workflow. Stop with BLOCKED if tests fail, review requires human judgment, auth is missing, or the PR cannot be created.
 

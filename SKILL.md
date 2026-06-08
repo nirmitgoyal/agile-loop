@@ -1,68 +1,132 @@
 ---
-name: Agile Loop
-description: Run and Monitor a GStack->GSD->Superpowers->GStack loop
+name: agile-loop
+description: Run the queued GStack → GSD → Superpowers → CodeRabbit → ship loop end-to-end. Reads tasks from `docs/agile-loop/tasks/*.md`, spawns isolated child sessions per stage, opens one PR per task, and waits for the human to merge before continuing. Use when asked to "run the agile loop", "process the next queued task", or "drive the autonomous engineering loop".
+allowed-tools:
+  - Bash
+  - Read
+  - Write
+  - Edit
+  - Glob
+argument-hint: "[--repo PATH] [--base BRANCH] [--max-iterations N] [--poll-interval SECONDS] [--dry-run]"
 ---
 
-# Agile Loop
+# Agile Loop — Claude Code adapter
 
-Run a simple autonomous engineering loop for Claude Code, Codex, Anti-gravity, and similar coding agents. The loop reads queued tasks, launches fresh child sessions for each major phase, ships one PR, waits for the human to merge it, marks the task done, and moves to the next queued task.
+You are the Claude Code adapter for Agile Loop. The Codex adapter lives at `scripts/agile-loop.sh` and runs the same contract via `codex exec --ephemeral`; you run it via `claude -p` headless child sessions. Both adapters share the queue, prompt shapes (`references/prompts.md`), `.agile-loop/status.json` schema, and dashboard.
 
-This keeps the autonomous loop pattern, but adapts it for a GStack + GSD + Superpowers + CodeRabbit workflow. The included shell runner is a Codex CLI adapter; the queue, prompts, dashboard, and workflow contract are portable to other agent hosts.
+When you spawn a child session via `claude -p "<prompt>"`, that is the Claude-side equivalent of `codex exec --ephemeral`: no chat history carryover, child reconstructs all context from the repository, task file, and explicit output files.
 
-## Quick Start
+## Pre-flight
 
-Install user-wide for detected supported hosts:
+1. Parse args (all optional): `--repo PATH` (default `$PWD`), `--base BRANCH` (default `main`), `--max-iterations N` (default 10), `--poll-interval SECONDS` (default 60), `--dry-run` (default false). `cd` into the resolved repo root.
+2. Confirm `git`, `gh`, `claude`, and `python3` are on `PATH`. If any are missing, write a blocked status with a clear message and stop.
+3. Create `.agile-loop/` and `.agile-loop/runs/<run-id>/` if missing. Generate a `RUN_ID` (e.g. UTC timestamp + short random).
+4. Initialize `.agile-loop/status.json` with `loop_status: starting` (use the status writer below).
+5. Print a one-line summary to the user: `Agile Loop: repo=<repo> base=<base> max=<n> dry_run=<bool> run=<RUN_ID>`.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash
-```
+## Per-iteration loop
 
-Install for a specific host:
+For up to `--max-iterations` iterations, or until the queue is empty:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host codex
-curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host claude
-curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash -s -- --host antigravity
-```
+### 1. Pick the next task
 
-Use `--upgrade` to replace an existing install.
+- `Glob docs/agile-loop/tasks/*.md` sorted lexically.
+- Read each file's YAML frontmatter. Pick the first with `status: todo`. If none, write `loop_status: idle` and stop cleanly with a one-line summary.
+- Edit the chosen task file's frontmatter to `status: doing`. Write status.json with `stage: claim`, `stage_status: running`, the task path, and the current iteration number. In `--dry-run`, do not mutate the task file; just log "would claim <task>".
 
-```bash
-~/.codex/skills/agile-loop/scripts/agile-loop.sh \
-  --repo /path/to/your/repo \
-  --base main \
-  --max-iterations 10 \
-  --poll-interval 60 \
-  --dry-run
-```
+### 2. Run the 11-step loop contract
 
-Use `--dry-run` first to print the sessions that would run without invoking the runner adapter or changing task status.
-
-With the included Codex adapter, real execution launches child sessions with approval and sandbox bypass. Opt in explicitly:
+For every agent-backed step, spawn a fresh child session via `Bash`:
 
 ```bash
-~/.codex/skills/agile-loop/scripts/agile-loop.sh \
-  --repo /path/to/your/repo \
-  --base main \
-  --unsafe-bypass-approvals
+claude -p "$(cat .agile-loop/runs/$RUN_ID/<stage>.prompt.md)" --output-format text \
+  > .agile-loop/runs/$RUN_ID/<stage>.output.md \
+  2> .agile-loop/runs/$RUN_ID/<stage>.events.log
 ```
 
-Start the status dashboard in another terminal:
+Write each prompt to its own file first (using the templates in the **Prompt templates** section below), then invoke `claude -p` against that file. Update status.json before and after each step.
 
-```bash
-~/.codex/skills/agile-loop/scripts/agile-dashboard.py \
-  --repo /path/to/your/repo
+The steps (mirrors `references/prompts.md` and `scripts/agile-loop.sh`):
+
+1. **Plan** — `Planning Session` template. Convert the task into a Superpowers plan.
+2. **Implement** — `Implementation Session` template. Run `superpowers:subagent-driven-development`.
+3. **CodeRabbit pass 1** — `CodeRabbit Session` template, `{pass}=1`. Parse the final JSON line `{"critical","major","minor","blocked","summary"}`.
+4. **Remediate CodeRabbit** — `CodeRabbit Remediation Session` template. Only spawn if pass 1 has `critical>0 || major>0`. Pass the pass-1 output file path as `{review_output}`.
+5. **GStack review** — `GStack Review Session` template. Runs `/review`.
+6. **QA** — `QA Session` template. Parse final JSON line `{"issues","blocked","report"}`.
+7. **Remediate QA** — `QA Remediation Session` template. Only if `issues>0`. Pass the QA output path as `{qa_output}`.
+8. **CodeRabbit pass 2** — `CodeRabbit Session` template, `{pass}=2`. Parse the same JSON shape.
+9. **Remediate CodeRabbit pass 2** — only if pass 2 has `critical>0 || major>0`.
+10. **Ship** — `Ship Session` template. Parse the final JSON line `{"blocked","pr_url","summary"}`. Capture `pr_url`.
+11. **Poll for merge** — see **Post-merge handling** below.
+
+### Retry policy per agent-backed step
+
+- 3 exponential-backoff retries (3s, 9s, 27s) on: child non-zero exit, empty stdout, JSON-contract stages missing the final JSON line, transient parse errors. Update status with `stage_status: retrying` between attempts.
+- Do NOT retry on: explicit `BLOCKED` or `NEEDS_CONTEXT` in the child output, or `blocked: true` in a JSON-contract stage's final line. Stop immediately: write `loop_status: blocked` with the child's reason, flip the task file frontmatter back to `status: blocked` (writing the reason into the task file body as a `## Blocked` section), and exit the loop.
+- For non-JSON stages, the final `STATUS:` line drives branching. `DONE` and `DONE_WITH_CONCERNS` continue; `BLOCKED` and `NEEDS_CONTEXT` stop.
+
+### 3. Post-merge handling
+
+After step 10 writes `pr_url`:
+
+1. Write `loop_status: waiting`, `stage: poll-merge`. Every `--poll-interval` seconds, run `gh pr view <pr_url> --json state,mergedAt,mergeable`.
+2. While the PR is open and unmerged, keep polling. If the PR closes unmerged, set `loop_status: blocked` with reason "PR closed unmerged" and exit.
+3. When `mergedAt` is non-null:
+   - `git fetch origin <base>`.
+   - `git checkout <base>`.
+   - Fast-forward only: `git merge --ff-only refs/remotes/origin/<base>`. If the fast-forward fails, set `loop_status: blocked` with reason "base branch <base> diverged from origin; cannot fast-forward" and stop. **Do not rebase or force-update.**
+4. Edit the task file's frontmatter to `status: done`. Write status.json with `stage: complete`, `stage_status: completed`.
+5. If iterations remain and the queue has more `todo` tasks, continue to the next iteration. Otherwise stop with a final `loop_status: idle`.
+
+## Prompt templates
+
+Build the prompt body for each stage by reading the matching section in `references/prompts.md` and substituting `{repo}`, `{base}`, `{task_file}`, `{pass}`, `{review_output}`, `{qa_output}`, and `{max_parallel_remediation}` (default `3`).
+
+You may copy each template inline at runtime rather than reading the file every step — but if you do, the wording must match `references/prompts.md` verbatim (including the `Session isolation:` block, the model directive at the top, and the JSON-contract closing line for CodeRabbit / QA / Ship). Drift between adapters silently breaks the dashboard and retry detection.
+
+## Status writer
+
+Both adapters write `.agile-loop/status.json` with this schema (the dashboard at `scripts/agile-dashboard.py` reads it):
+
+```json
+{
+  "loop_status": "starting|running|waiting|blocked|idle|dry_run",
+  "stage": "claim|plan|implement|coderabbit|remediate-coderabbit|gstack-review|qa|remediate-qa|ship|poll-merge|sync-base|complete",
+  "stage_status": "running|completed|failed|retrying|blocked|waiting|skipped",
+  "message": "human-readable summary",
+  "task": "docs/agile-loop/tasks/<file>.md",
+  "iteration": 1,
+  "pr_url": "https://github.com/owner/repo/pull/123",
+  "updated_at": "2026-06-08T17:00:00Z",
+  "run_id": "<RUN_ID>",
+  "repo": "<absolute repo path>",
+  "base": "<base branch>",
+  "run_dir": ".agile-loop/runs/<RUN_ID>",
+  "log_file": ".agile-loop/runs/<RUN_ID>/loop.log"
+}
 ```
 
-The dashboard serves `http://127.0.0.1:8765` by default and refreshes the runner status every 15 seconds. It uses a server-side event stream so hidden browser tabs do not fall back to one-minute timer throttling. It shows the non-done queue, the latest five completed tasks in past work, current status, current stage, last poll time, and blocked reason when blocked.
+Write status atomically — temp file in `.agile-loop/` then `mv`. The canonical implementation is the `write_status()` function in `scripts/agile-loop.sh`; mirror its field names exactly. A small `python3 -c` heredoc invoked via `Bash` is sufficient.
 
-## Queue
+## Guardrails (non-negotiable)
 
-Create one Markdown file per task under `docs/agile-loop/tasks/`.
+- One PR per queued task.
+- Stop instead of guessing on: `BLOCKED`, `NEEDS_CONTEXT`, failed tests, mandatory user judgment, missing authentication, or closed-unmerged PR state.
+- Delegate CodeRabbit and QA fixes only after findings exist (no preemptive cleanup).
+- Keep remediation scoped to the finding source. Do not broaden into cleanup.
+- Prefer repo guidance from `AGENTS.md` when present in the target repo.
+- Do not skip the human merge gate. The loop continues only after the PR is merged.
+- Do not mark a task `done` until the configured base branch has successfully fast-forwarded to `origin/<base>`. Do not use a post-merge rebase to replay local base-branch commits.
+- `--dry-run` prints what would happen and writes `loop_status: dry_run` / `stage_status: skipped` for each stage. Do not spawn child sessions, do not mutate task files, do not run `git fetch` or `gh` write operations.
+
+## Queue format
+
+Each `docs/agile-loop/tasks/*.md` file uses this shape:
 
 ```markdown
 ---
-status: todo
+status: todo|doing|done|blocked
 title: Short task title
 phase: optional-gsd-phase-id
 ---
@@ -77,46 +141,9 @@ Links to GSD phase docs, plans, screenshots, issues, or acceptance notes.
 Concrete acceptance criteria.
 ```
 
-Supported statuses:
-- `todo`: ready for the next loop iteration.
-- `doing`: claimed by the current loop.
-- `done`: PR was merged by the human.
-- `blocked`: child session blocked, tests failed, PR closed unmerged, or mandatory human judgment was required.
+## References
 
-## Loop Contract
-
-For each `todo` task, run this sequence in separate agent sessions. The included Codex runner enforces this with one fresh `codex exec --ephemeral` invocation per agent-backed step; handoff happens through repo files, task files, and stage output files, not prior child-session history.
-
-1. Turn the GSD phase/task into a Superpowers implementation plan using `gpt-5.5`.
-2. Execute the plan with `superpowers:subagent-driven-development` using `gpt-5.4`.
-3. Run `coderabbit:code-review` using `gpt-5.5`.
-4. Only if CodeRabbit reports Critical or Major issues, fix them with scoped sub-agents.
-5. Run `/review` using `gpt-5.5`.
-6. Run `/qa-only mode: full` using `gpt-5.5`.
-7. Only if QA reports issues, fix them using `/investigate` and scoped sub-agents.
-8. Run CodeRabbit again using `gpt-5.5`.
-9. Only if Critical or Major CodeRabbit issues remain, fix them with scoped sub-agents.
-10. Run `/ship` using `gpt-5.5`.
-11. Poll the PR until a human merges it. Then fetch `origin/<base>`, switch to the base branch, fast-forward local `<base>` to `refs/remotes/origin/<base>`, mark the task `done`, and continue.
-
-Every failed loop stage gets 3 exponential-backoff retries before the task is blocked. Command failures, empty child-session output, and missing final JSON lines in JSON-contract stages are retryable; explicit `BLOCKED` or `NEEDS_CONTEXT` child-session results still stop immediately.
-
-Read `references/prompts.md` before changing the runner prompt wording. The runner expects child sessions to end with a final JSON line for CodeRabbit, QA, and ship stages.
-
-## Guardrails
-
-- Keep one PR per queued task.
-- Stop instead of guessing when a child session reports `BLOCKED`, `NEEDS_CONTEXT`, failed tests, mandatory user judgment, missing authentication, or closed-unmerged PR state.
-- Delegate CodeRabbit and QA fixes only after findings exist.
-- Keep remediation scoped to the finding source. Do not broaden into cleanup.
-- Prefer repo guidance from `AGENTS.md` when present.
-- Do not skip the human merge gate. The loop continues only after the PR is merged.
-- Do not mark a task `done` until the configured base branch has successfully fast-forwarded to `origin/<base>`. Do not use a post-merge rebase to replay local base-branch commits.
-
-## Runner Files
-
-- `scripts/agile-loop.sh`: the executable loop runner.
-- `scripts/agile-dashboard.py`: a dependency-free web dashboard for `.agile-loop/status.json`.
-- `references/prompts.md`: exact child-session prompt contracts.
-- `tests/test-agile-loop.sh`: deterministic fake-command tests for runner branching and status writes.
-- `tests/test-agile-dashboard.sh`: dashboard HTTP and polling smoke tests.
+- Prompt contracts (host-neutral): `references/prompts.md`.
+- Codex adapter (reference implementation for retry / JSON parsing / status writes): `scripts/agile-loop.sh`.
+- Dashboard: `scripts/agile-dashboard.py` (defaults to `http://127.0.0.1:8765`; reads `.agile-loop/status.json`).
+- Codex-side metadata: `agents/openai.yaml`. Claude-side metadata: `agents/claude.yaml`.
