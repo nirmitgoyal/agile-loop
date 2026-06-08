@@ -72,6 +72,46 @@ grep -qF 'claude -p' <<< "$BODY" \
   || fail "SKILL.md (Claude adapter) must spawn child sessions via 'claude -p'"
 pass "SKILL.md uses 'claude -p' for child sessions"
 
+# Permission bypass: live runs must skip permission prompts in the child, and
+# must be opted into with the same flag the Codex adapter uses.
+grep -qF -- '--dangerously-skip-permissions' <<< "$BODY" \
+  || fail "SKILL.md must pass --dangerously-skip-permissions so headless children can write files / run commands"
+grep -qF -- '--unsafe-bypass-approvals' <<< "$BODY" \
+  || fail "SKILL.md must gate live runs behind --unsafe-bypass-approvals (mirrors the Codex adapter)"
+grep -qF 'AGILE_LOOP_UNSAFE_BYPASS' <<< "$BODY" \
+  || fail "SKILL.md must honor AGILE_LOOP_UNSAFE_BYPASS=1 as an alternative to the flag"
+pass "SKILL.md gates live runs and passes --dangerously-skip-permissions to children"
+
+# Canonical status.json fields — match scripts/agile-loop.sh::write_status and
+# scripts/agile-dashboard.py.
+for key in '"status"' '"stage"' '"stage_status"' '"task_file"' '"task_title"' '"pr_url"' '"dry_run"'; do
+  grep -qF "$key" <<< "$BODY" \
+    || fail "SKILL.md status schema must document the canonical key $key"
+done
+pass "SKILL.md documents canonical status.json fields (status, task_file, etc.)"
+
+# Non-canonical aliases that the dashboard/writer do NOT understand. Catch
+# accidental regressions to the earlier wording.
+if grep -qE '"loop_status"|"task"[[:space:]]*:' <<< "$BODY"; then
+  fail "SKILL.md must not document 'loop_status' or '\"task\":' — the canonical keys are 'status' and 'task_file'"
+fi
+pass "SKILL.md does not use the non-canonical 'loop_status' / 'task' keys"
+
+# No GPT-only model directives in the inlined prompts — those are Codex-specific
+# and child claude -p sessions cannot switch to OpenAI models.
+if grep -qE 'gpt-5\.[0-9]+' <<< "$BODY"; then
+  fail "SKILL.md inlined prompts must not include GPT model directives (Codex-specific)"
+fi
+pass "SKILL.md does not embed Codex-only model directives"
+
+# The prompts must be inlined (no relative-path lookup of prompts.md against
+# the target repo at runtime).
+grep -qF 'Prompt templates' <<< "$BODY" \
+  || fail "SKILL.md must inline the prompt templates under a 'Prompt templates' section so there is no runtime file lookup"
+grep -qE 'Planning Session|Implementation Session|Ship Session' <<< "$BODY" \
+  || fail "SKILL.md must inline the per-stage prompt template headings"
+pass "SKILL.md inlines the per-stage prompt templates"
+
 grep -qE '\bcodex\b|CODEX_BIN' "$RUNNER_SH" \
   || fail "scripts/agile-loop.sh (Codex adapter) must invoke the codex CLI"
 grep -qE '^[[:space:]]*--ephemeral[[:space:]]*\\?[[:space:]]*$' "$RUNNER_SH" \
