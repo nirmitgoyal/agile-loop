@@ -1,0 +1,6 @@
+interface:
+  display_name: "Agile Loop"
+  short_description: "Run and monitor a GStack->GSD->Superpowers->ship loop"
+  default_prompt: "Use /agile-loop to run the next queued task and monitor it in the dashboard."
+policy:
+  allow_implicit_invocation: true

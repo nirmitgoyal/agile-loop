@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Codex adapter for Agile Loop. The Claude Code adapter is SKILL.md.
+# Both adapters share the queue, prompt shapes (references/prompts.md), and .agile-loop/status.json schema.
 set -euo pipefail
 
 REPO=""

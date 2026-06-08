@@ -4,9 +4,16 @@ Agile Loop runs a queued engineering loop for agent-assisted repos:
 GStack spec -> GSD phase -> Superpowers plan -> implementation -> review/QA ->
 ship -> human merge.
 
-The maintained runner is Codex-specific and launches fresh child sessions with
-`codex exec --ephemeral`. The installer can copy the skill into Codex, Claude
-Code, or Antigravity, but non-Codex hosts need their own runner adapter.
+Two adapters drive the same contract:
+
+- **Claude Code adapter** — `SKILL.md`. Claude itself orchestrates the loop and
+  spawns fresh child sessions with `claude -p` for each stage.
+- **Codex adapter** — `scripts/agile-loop.sh`. A shell runner that spawns fresh
+  child sessions with `codex exec --ephemeral` for each stage.
+
+Both adapters read the same `docs/agile-loop/tasks/*.md` queue, use the
+prompt shapes in `references/prompts.md`, and write the same
+`.agile-loop/status.json` (the dashboard works on either path).
 
 ## Install
 
@@ -14,15 +21,25 @@ Code, or Antigravity, but non-Codex hosts need their own runner adapter.
 curl -fsSL https://raw.githubusercontent.com/nirmitgoyal/agile-loop/main/scripts/install.sh | bash
 ```
 
-Useful flags: `--host codex|claude|antigravity|all`, `--scope user|project`,
-`--upgrade`, `--dry-run`.
+Useful flags: `--host claude|codex|antigravity|all`, `--scope user|project`,
+`--upgrade`, `--dry-run`. The installer copies the skill into the right
+location for each detected host (`~/.claude/skills/agile-loop/` for Claude
+Code, `~/.codex/skills/agile-loop/` for Codex).
 
 ## Requirements
 
-- Codex CLI on `PATH` as `codex`.
-- Python 3 for the dashboard.
-- `git` and GitHub CLI `gh`.
-- GStack, GSD, Superpowers, and CodeRabbit skills available in the target repo.
+Shared:
+
+- `git`
+- GitHub CLI `gh`
+- Python 3 (for the dashboard, and for status-file writes on both adapters)
+
+Per host:
+
+- **Claude Code path**: `claude` CLI on `PATH`.
+- **Codex path**: `codex` CLI on `PATH`.
+
+In the target repo: GStack, GSD, Superpowers, and CodeRabbit skills installed.
 
 ## Tasks
 
@@ -47,7 +64,25 @@ Concrete acceptance criteria.
 
 Statuses: `todo`, `doing`, `done`, `blocked`.
 
-## Run
+## Run from Claude Code
+
+Invoke the skill against the current repo:
+
+```
+/agile-loop --repo . --base main --max-iterations 1 --dry-run
+```
+
+Live run:
+
+```
+/agile-loop --repo . --base main --max-iterations 10 --poll-interval 60
+```
+
+Claude reads the queue, claims the next `todo` task, and drives the loop
+end-to-end. Each agent-backed stage is a fresh `claude -p` child session, so
+there is no chat-history carryover between stages.
+
+## Run from Codex CLI
 
 Start with a dry run:
 
@@ -59,7 +94,7 @@ Start with a dry run:
   --dry-run
 ```
 
-Run the loop:
+Live run:
 
 ```bash
 ~/.codex/skills/agile-loop/scripts/agile-loop.sh \
@@ -73,7 +108,9 @@ Run the loop:
 You can set `AGILE_LOOP_UNSAFE_BYPASS=1` instead of passing
 `--unsafe-bypass-approvals`.
 
-Start the dashboard:
+## Dashboard
+
+The dashboard works for both adapters:
 
 ```bash
 ~/.codex/skills/agile-loop/scripts/agile-dashboard.py \
@@ -81,4 +118,16 @@ Start the dashboard:
   --port 8765
 ```
 
+(The installer copies the same `scripts/agile-dashboard.py` into both
+`~/.codex/skills/agile-loop/` and `~/.claude/skills/agile-loop/` — either copy
+works.)
+
 It serves `http://127.0.0.1:8765` and reads `.agile-loop/status.json`.
+
+## Tests
+
+- `tests/test-agile-loop.sh` — deterministic fake-`codex` tests for the Codex
+  adapter's branching, retries, and status writes.
+- `tests/test-agile-dashboard.sh` — dashboard HTTP and polling smoke tests.
+- `tests/test-skill-md.sh` — frontmatter and adapter-contract validation for
+  `SKILL.md`.
