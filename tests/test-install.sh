@@ -40,6 +40,8 @@ assert_installed() {
   assert_file "$dest/scripts/agile-dashboard.py"
   assert_file "$dest/references/prompts.md"
   assert_file "$dest/docs/agile-loop-diagram.png"
+  # Dev-only test scripts must never be copied into an install.
+  assert_not_exists "$dest/tests"
 }
 
 run_install() {

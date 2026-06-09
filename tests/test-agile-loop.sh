@@ -107,10 +107,19 @@ case "$stage" in
     printf 'QA fake output\n{"issues":%s,"blocked":false,"report":"fake"}\n' "${FAKE_QA_ISSUES:-0}" > "$out"
     ;;
   ship)
-    printf 'Ship fake output\n{"blocked":false,"pr_url":"https://github.com/acme/repo/pull/1","summary":"fake"}\n' > "$out"
+    if [ "${FAKE_SHIP_NO_PR_URL:-0}" = "1" ]; then
+      printf 'Ship fake output\n{"blocked":false,"summary":"fake without pr_url"}\n' > "$out"
+    else
+      printf 'Ship fake output\n{"blocked":false,"pr_url":"https://github.com/acme/repo/pull/1","summary":"fake"}\n' > "$out"
+    fi
     ;;
   *)
-    printf 'STATUS: DONE\n' > "$out"
+    if [ -n "${FAKE_PROSE_BLOCKED_STAGE:-}" ] && [ "$stage" = "$FAKE_PROSE_BLOCKED_STAGE" ]; then
+      # Prose mentions a blocked status, but the final STATUS line is DONE.
+      printf 'I considered whether to emit STATUS: BLOCKED but the work is fine.\nSTATUS: DONE\n' > "$out"
+    else
+      printf 'STATUS: DONE\n' > "$out"
+    fi
     ;;
 esac
 EOF
@@ -126,20 +135,11 @@ set -euo pipefail
 printf '%s\n' "$*" >> "${FAKE_GH_LOG:?}"
 
 args=" $* "
-if [[ "$args" == *" --json state "* ]]; then
+if [[ "$args" == *" --json state,mergedAt "* ]]; then
   if [ "${FAKE_GH_CLOSED:-0}" = "1" ]; then
-    echo "CLOSED"
+    printf '{"state":"CLOSED","mergedAt":null}\n'
   else
-    echo "MERGED"
-  fi
-  exit 0
-fi
-
-if [[ "$args" == *" --json mergedAt "* ]]; then
-  if [ "${FAKE_GH_CLOSED:-0}" = "1" ]; then
-    echo ""
-  else
-    echo "2026-05-27T00:00:00Z"
+    printf '{"state":"MERGED","mergedAt":"2026-05-27T00:00:00Z"}\n'
   fi
   exit 0
 fi
@@ -416,7 +416,7 @@ assert_not_contains "$repo_zero/codex.log" "remediate-qa"
 assert_json_value "$repo_zero/.agile-loop/status.json" status completed
 assert_json_value "$repo_zero/.agile-loop/status.json" stage complete
 assert_json_value "$repo_zero/.agile-loop/status.json" task_title "Test task"
-assert_contains "$repo_zero/gh.log" "^pr view https://github.com/acme/repo/pull/1 --json state -q .state$"
+assert_contains "$repo_zero/gh.log" "^pr view https://github.com/acme/repo/pull/1 --json state,mergedAt$"
 assert_contains "$repo_zero/git.log" "^fetch origin +refs/heads/main:refs/remotes/origin/main$"
 assert_contains "$repo_zero/git.log" "^switch main$"
 assert_contains "$repo_zero/git.log" "^merge --ff-only refs/remotes/origin/main$"
@@ -537,5 +537,150 @@ assert_contains "$repo_sync_failed/git.log" "^fetch origin +refs/heads/main:refs
 assert_contains "$repo_sync_failed/git.log" "^switch main$"
 assert_contains "$repo_sync_failed/git.log" "^merge --ff-only refs/remotes/origin/main$"
 assert_not_contains "$repo_sync_failed/git.log" "^pull "
+
+# Finding 1: dry-run must preview each DISTINCT todo task once, in queue order,
+# up to --max-iterations, without mutating any task file.
+add_second_task() {
+  local repo="$1"
+  cat > "$repo/docs/agile-loop/tasks/002-second.md" <<'EOF'
+---
+status: todo
+title: Second task
+phase: phase-test
+---
+
+## Objective
+Do the second test task.
+EOF
+}
+
+repo_dry_two="$TMP_ROOT/dry-run-two"
+make_repo "$repo_dry_two"
+add_second_task "$repo_dry_two"
+write_fake_codex "$repo_dry_two"
+rc=0
+CODEX_BIN="$repo_dry_two/bin/codex" \
+"$RUNNER" --repo "$repo_dry_two" --base main --max-iterations 2 --dry-run > "$repo_dry_two/run.out" 2>&1 || rc=$?
+if [ "$rc" != "0" ]; then
+  cat "$repo_dry_two/run.out" >&2
+  echo "Expected two-task dry-run to succeed" >&2
+  exit 1
+fi
+first_count="$(grep -c "DRY RUN: next task .*001-test.md$" "$repo_dry_two/run.out")"
+second_count="$(grep -c "DRY RUN: next task .*002-second.md$" "$repo_dry_two/run.out")"
+if [ "$first_count" != "1" ] || [ "$second_count" != "1" ]; then
+  cat "$repo_dry_two/run.out" >&2
+  echo "Expected each distinct todo task previewed exactly once (got first=$first_count second=$second_count)" >&2
+  exit 1
+fi
+[ "$(status_of "$repo_dry_two/docs/agile-loop/tasks/001-test.md")" = "todo" ]
+[ "$(status_of "$repo_dry_two/docs/agile-loop/tasks/002-second.md")" = "todo" ]
+
+repo_dry_one="$TMP_ROOT/dry-run-one"
+make_repo "$repo_dry_one"
+add_second_task "$repo_dry_one"
+write_fake_codex "$repo_dry_one"
+rc=0
+CODEX_BIN="$repo_dry_one/bin/codex" \
+"$RUNNER" --repo "$repo_dry_one" --base main --max-iterations 1 --dry-run > "$repo_dry_one/run.out" 2>&1 || rc=$?
+if [ "$rc" != "0" ]; then
+  cat "$repo_dry_one/run.out" >&2
+  echo "Expected one-iteration dry-run to succeed" >&2
+  exit 1
+fi
+assert_contains "$repo_dry_one/run.out" "DRY RUN: next task .*001-test.md$"
+assert_not_contains "$repo_dry_one/run.out" "002-second.md"
+[ "$(status_of "$repo_dry_one/docs/agile-loop/tasks/001-test.md")" = "todo" ]
+[ "$(status_of "$repo_dry_one/docs/agile-loop/tasks/002-second.md")" = "todo" ]
+
+# Finding 2: prose containing "STATUS: BLOCKED" must not block when the final
+# STATUS line is DONE.
+repo_prose="$TMP_ROOT/prose-not-blocked"
+make_repo "$repo_prose"
+write_fake_codex "$repo_prose"
+write_fake_gh "$repo_prose"
+write_fake_git "$repo_prose"
+rc=0
+FAKE_CODEX_LOG="$repo_prose/codex.log" \
+FAKE_GIT_LOG="$repo_prose/git.log" \
+FAKE_GH_LOG="$repo_prose/gh.log" \
+FAKE_PROSE_BLOCKED_STAGE="plan" \
+AGILE_LOOP_RETRY_INITIAL_SECONDS="0" \
+CODEX_BIN="$repo_prose/bin/codex" \
+GH_BIN="$repo_prose/bin/gh" \
+GIT_BIN="$repo_prose/bin/git" \
+"$RUNNER" --repo "$repo_prose" --base main --max-iterations 1 --poll-interval 1 --poll-timeout 2 --unsafe-bypass-approvals > "$repo_prose/run.out" 2>&1 || rc=$?
+if [ "$rc" != "0" ]; then
+  cat "$repo_prose/run.out" >&2
+  echo "Expected prose-mentioning-BLOCKED case to complete, not halt the loop" >&2
+  exit 1
+fi
+[ "$(status_of "$repo_prose/docs/agile-loop/tasks/001-test.md")" = "done" ]
+assert_json_value "$repo_prose/.agile-loop/status.json" status completed
+
+# Finding 4: ship JSON without pr_url must block at the ship/poll stage.
+repo_no_pr="$TMP_ROOT/ship-no-pr-url"
+make_repo "$repo_no_pr"
+write_fake_codex "$repo_no_pr"
+write_fake_gh "$repo_no_pr"
+write_fake_git "$repo_no_pr"
+rc=0
+FAKE_CODEX_LOG="$repo_no_pr/codex.log" \
+FAKE_GIT_LOG="$repo_no_pr/git.log" \
+FAKE_GH_LOG="$repo_no_pr/gh.log" \
+FAKE_SHIP_NO_PR_URL="1" \
+AGILE_LOOP_RETRY_INITIAL_SECONDS="0" \
+CODEX_BIN="$repo_no_pr/bin/codex" \
+GH_BIN="$repo_no_pr/bin/gh" \
+GIT_BIN="$repo_no_pr/bin/git" \
+"$RUNNER" --repo "$repo_no_pr" --base main --max-iterations 1 --poll-interval 1 --poll-timeout 2 --unsafe-bypass-approvals > "$repo_no_pr/run.out" 2>&1 || rc=$?
+if [ "$rc" = "0" ]; then
+  cat "$repo_no_pr/run.out" >&2
+  echo "Expected ship-without-pr_url to block" >&2
+  exit 1
+fi
+[ "$(status_of "$repo_no_pr/docs/agile-loop/tasks/001-test.md")" = "blocked" ]
+assert_json_value "$repo_no_pr/.agile-loop/status.json" status blocked
+assert_json_value "$repo_no_pr/.agile-loop/status.json" stage 10-ship
+assert_contains "$repo_no_pr/run.out" "ship stage returned no pr_url"
+if [ -f "$repo_no_pr/gh.log" ]; then
+  echo "Expected no gh poll when ship returned no pr_url" >&2
+  exit 1
+fi
+
+# Finding 6: a task filename containing a space must be found and processed.
+repo_space="$TMP_ROOT/space-in-filename"
+make_repo "$repo_space"
+rm -f "$repo_space/docs/agile-loop/tasks/001-test.md"
+cat > "$repo_space/docs/agile-loop/tasks/001 with space.md" <<'EOF'
+---
+status: todo
+title: Spaced task
+phase: phase-test
+---
+
+## Objective
+Do the spaced test task.
+EOF
+write_fake_codex "$repo_space"
+write_fake_gh "$repo_space"
+write_fake_git "$repo_space"
+rc=0
+FAKE_CODEX_LOG="$repo_space/codex.log" \
+FAKE_GIT_LOG="$repo_space/git.log" \
+FAKE_GH_LOG="$repo_space/gh.log" \
+AGILE_LOOP_RETRY_INITIAL_SECONDS="0" \
+CODEX_BIN="$repo_space/bin/codex" \
+GH_BIN="$repo_space/bin/gh" \
+GIT_BIN="$repo_space/bin/git" \
+"$RUNNER" --repo "$repo_space" --base main --max-iterations 1 --poll-interval 1 --poll-timeout 2 --unsafe-bypass-approvals > "$repo_space/run.out" 2>&1 || rc=$?
+if [ "$rc" != "0" ]; then
+  cat "$repo_space/run.out" >&2
+  echo "Expected task filename with a space to be found and processed" >&2
+  exit 1
+fi
+[ "$(status_of "$repo_space/docs/agile-loop/tasks/001 with space.md")" = "done" ]
+assert_json_value "$repo_space/.agile-loop/status.json" status completed
+assert_all_fresh_sessions "$repo_space/codex.log"
 
 echo "agile-loop runner tests passed"

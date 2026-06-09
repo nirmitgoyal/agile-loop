@@ -220,7 +220,7 @@ copy_skill() {
 
   mkdir -p "$parent"
   mkdir -p "$dest"
-  for item in SKILL.md README.md LICENSE agents docs references scripts tests; do
+  for item in SKILL.md README.md LICENSE agents docs references scripts; do
     if [ -e "$source/$item" ]; then
       cp -R "$source/$item" "$dest/"
     fi

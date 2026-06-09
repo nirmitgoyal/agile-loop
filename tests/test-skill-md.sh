@@ -183,5 +183,127 @@ for needle in "${SP_WORKFLOW_NEEDLES[@]}"; do
 done
 pass "scripts/agile-loop.sh implement prompt drives the full Superpowers workflow"
 
+# ---------------------------------------------------------------------------
+# Drift guard: the three adapter surfaces (Codex runner, SKILL.md, prompts.md)
+# ship the same contract three times. SKILL.md deliberately inlines its
+# templates, so we cannot de-duplicate the text — instead we pin the canonical
+# contract VALUES (read out of scripts/agile-loop.sh, the reference
+# implementation) and assert SKILL.md and references/prompts.md agree. All
+# checks are value-based greps, not line-number-based, so they survive edits
+# that move text around. Any future change that makes the three files disagree
+# on these values fails here.
+# ---------------------------------------------------------------------------
+
+# 1. max_parallel_remediation default. Canonical = the literal the runner
+#    initializes MAX_PARALLEL_REMEDIATION to.
+MAX_PARALLEL_DEFAULT="$(grep -oE '^MAX_PARALLEL_REMEDIATION="[0-9]+"' "$RUNNER_SH" | grep -oE '[0-9]+')"
+[ -n "$MAX_PARALLEL_DEFAULT" ] || fail "could not read MAX_PARALLEL_REMEDIATION default out of $RUNNER_SH"
+# The runner's --help must advertise the same default.
+grep -qF "Defaults to $MAX_PARALLEL_DEFAULT." "$RUNNER_SH" \
+  || fail "scripts/agile-loop.sh help text must advertise max-parallel default $MAX_PARALLEL_DEFAULT"
+# SKILL.md documents the {max_parallel_remediation} default; it must match.
+grep -qF "\`{max_parallel_remediation}\` — default \`$MAX_PARALLEL_DEFAULT\`" "$SKILL_MD" \
+  || fail "SKILL.md must document {max_parallel_remediation} default \`$MAX_PARALLEL_DEFAULT\` (matches scripts/agile-loop.sh)"
+# Catch a stale default left behind anywhere in SKILL.md.
+if grep -oE '\{max_parallel_remediation\}` — default `[0-9]+`' "$SKILL_MD" | grep -qvF "default \`$MAX_PARALLEL_DEFAULT\`"; then
+  fail "SKILL.md documents a {max_parallel_remediation} default that disagrees with scripts/agile-loop.sh ($MAX_PARALLEL_DEFAULT)"
+fi
+# references/prompts.md only uses the {max_parallel_remediation} placeholder and
+# must not hardcode a conflicting numeric default.
+if grep -oE '\{max_parallel_remediation\}[^`]*default `[0-9]+`' "$PROMPTS_MD" | grep -qvF "default \`$MAX_PARALLEL_DEFAULT\`"; then
+  fail "references/prompts.md hardcodes a max_parallel_remediation default that disagrees with scripts/agile-loop.sh ($MAX_PARALLEL_DEFAULT)"
+fi
+pass "max_parallel_remediation default ($MAX_PARALLEL_DEFAULT) agrees across runner, SKILL.md, and prompts.md"
+
+# 2. Retry backoff schedule. Canonical = the first delay
+#    (RETRY_INITIAL_SECONDS) doubled RETRY_COUNT times, since
+#    retry_delay_for_attempt() doubles from the initial each retry.
+RETRY_COUNT="$(grep -oE '^RETRY_COUNT="[0-9]+"' "$RUNNER_SH" | grep -oE '[0-9]+')"
+RETRY_INITIAL="$(grep -oE 'RALPH_LOOP_RETRY_INITIAL_SECONDS:-[0-9]+' "$RUNNER_SH" | grep -oE '[0-9]+$')"
+[ -n "$RETRY_COUNT" ] || fail "could not read RETRY_COUNT out of $RUNNER_SH"
+[ -n "$RETRY_INITIAL" ] || fail "could not read the retry initial-delay default out of $RUNNER_SH"
+# Build the expected "5s, 10s, 20s"-style schedule from the runner constants.
+BACKOFF_SCHEDULE=""
+delay="$RETRY_INITIAL"
+n=0
+while [ "$n" -lt "$RETRY_COUNT" ]; do
+  if [ -z "$BACKOFF_SCHEDULE" ]; then
+    BACKOFF_SCHEDULE="${delay}s"
+  else
+    BACKOFF_SCHEDULE="$BACKOFF_SCHEDULE, ${delay}s"
+  fi
+  delay=$((delay * 2))
+  n=$((n + 1))
+done
+# The runner --help must advertise the same schedule.
+grep -qF "$BACKOFF_SCHEDULE" "$RUNNER_SH" \
+  || fail "scripts/agile-loop.sh help text must advertise backoff schedule '$BACKOFF_SCHEDULE'"
+# SKILL.md retry policy must advertise the same schedule.
+grep -qF "$BACKOFF_SCHEDULE" "$SKILL_MD" \
+  || fail "SKILL.md retry policy must advertise backoff schedule '$BACKOFF_SCHEDULE' (matches scripts/agile-loop.sh: $RETRY_COUNT retries doubling from ${RETRY_INITIAL}s)"
+# Guard against the historical wrong schedule in either doc.
+for doc in "$SKILL_MD" "$PROMPTS_MD"; do
+  if grep -qE '\b3s, 9s, 27s\b' "$doc"; then
+    fail "$doc still advertises the stale '3s, 9s, 27s' backoff; canonical is '$BACKOFF_SCHEDULE'"
+  fi
+done
+pass "retry backoff schedule ($BACKOFF_SCHEDULE) agrees across runner and SKILL.md"
+
+# 3. Stage name set. Canonical = the 'agile-loop stage: <name>' identifiers the
+#    runner emits in its prompt bodies. Each must appear, verbatim, in both
+#    SKILL.md and references/prompts.md so the three prompt surfaces describe the
+#    same stage set.
+STAGE_NAMES="$(grep -oE 'agile-loop stage: [a-z][a-z ]*[a-z]' "$RUNNER_SH" \
+  | sed -E 's/^agile-loop stage: //' | sort -u)"
+[ -n "$STAGE_NAMES" ] || fail "could not extract any 'agile-loop stage:' identifiers from $RUNNER_SH"
+while IFS= read -r stage; do
+  [ -n "$stage" ] || continue
+  # Anchor on a non-letter boundary so e.g. 'ship' does not match 'shipx' and a
+  # renamed/garbled identifier is caught. Stage names are [a-z ] only, so they
+  # carry no regex metacharacters and are safe to embed in a pattern.
+  if ! grep -qE "agile-loop stage: ${stage}([^a-z]|$)" "$SKILL_MD"; then
+    fail "SKILL.md is missing the canonical stage prompt identifier 'agile-loop stage: $stage'"
+  fi
+  if ! grep -qE "agile-loop stage: ${stage}([^a-z]|$)" "$PROMPTS_MD"; then
+    fail "references/prompts.md is missing the canonical stage prompt identifier 'agile-loop stage: $stage'"
+  fi
+done <<< "$STAGE_NAMES"
+pass "stage name set ($(echo "$STAGE_NAMES" | paste -sd'/' -)) agrees across runner, SKILL.md, and prompts.md"
+
+# 4. status.json status/stage enum values. The runner is the source of truth
+#    for which loop-status and stage tokens get written; SKILL.md documents the
+#    canonical enum in its status.json schema. Assert every core token the
+#    runner actually emits is present in SKILL.md's documented enum (so the
+#    dashboard's expected vocabulary cannot silently drift from the writer).
+STATUS_ENUM_LINE="$(grep -F '"status": "' "$SKILL_MD" | head -n1)"
+STAGE_ENUM_LINE="$(grep -F '"stage": "' "$SKILL_MD" | head -n1)"
+[ -n "$STATUS_ENUM_LINE" ] || fail "SKILL.md status.json schema is missing the \"status\" enum line"
+[ -n "$STAGE_ENUM_LINE" ] || fail "SKILL.md status.json schema is missing the \"stage\" enum line"
+
+# loop_status values the runner emits (first arg to write_status).
+RUNNER_STATUS_VALUES="$(grep -oE 'write_status "[a-z_]+"' "$RUNNER_SH" \
+  | sed -E 's/write_status "([a-z_]+)"/\1/' | sort -u)"
+[ -n "$RUNNER_STATUS_VALUES" ] || fail "could not extract loop-status values emitted by $RUNNER_SH"
+# 'start', 'done', and 'completed' are runner-internal lifecycle states; the
+# documented enum is the dashboard vocabulary. Assert the shared core set.
+for status_value in running waiting blocked idle dry_run; do
+  grep -qF "$status_value" <<< "$RUNNER_STATUS_VALUES" \
+    || fail "expected core loop-status '$status_value' to be emitted by scripts/agile-loop.sh"
+  grep -qE "[\"|]$status_value[\"|]" <<< "$STATUS_ENUM_LINE" \
+    || fail "SKILL.md status enum must include the canonical status '$status_value'"
+done
+# Core stage tokens that name pipeline phases (un-numbered) — the runner emits
+# these directly and SKILL.md must document them in the stage enum.
+for stage_token in claim poll-merge sync-base complete; do
+  grep -qE "[\"|]$stage_token[\"|]" <<< "$STAGE_ENUM_LINE" \
+    || fail "SKILL.md stage enum must include the canonical stage '$stage_token'"
+done
+# The agent-backed pipeline stages (un-numbered names) must also be in the enum.
+for stage_token in plan implement deep-review remediate-deep-review gstack-review qa remediate-qa ship; do
+  grep -qE "[\"|]$stage_token[\"|]" <<< "$STAGE_ENUM_LINE" \
+    || fail "SKILL.md stage enum must include the canonical pipeline stage '$stage_token'"
+done
+pass "status.json status/stage enum values agree between scripts/agile-loop.sh and SKILL.md"
+
 echo ""
 echo "OK: SKILL.md and adapter contract invariants hold."

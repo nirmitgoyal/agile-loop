@@ -228,6 +228,17 @@ stop_status_heartbeat() {
   fi
 }
 
+# Ensure the background heartbeat subshell can never outlive the parent, even on
+# an external SIGTERM/SIGINT or abnormal exit, where it would otherwise keep
+# overwriting status.json forever.
+cleanup_status_heartbeat() {
+  stop_status_heartbeat "$STATUS_HEARTBEAT_PID"
+  STATUS_HEARTBEAT_PID=""
+}
+trap cleanup_status_heartbeat EXIT
+trap 'cleanup_status_heartbeat; exit 130' INT
+trap 'cleanup_status_heartbeat; exit 143' TERM
+
 retry_delay_for_attempt() {
   local retry_number="$1"
   local delay="$RETRY_INITIAL_SECONDS"
@@ -344,21 +355,54 @@ status = sys.argv[2]
 note = sys.argv[3]
 text = path.read_text()
 stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-entry = f"\n\n## Agile Loop Notes\n\n- {stamp} [{status}] {note}\n"
-path.write_text(text.rstrip() + entry)
+heading = "## Agile Loop Notes"
+bullet = f"- {stamp} [{status}] {note}"
+body = text.rstrip()
+if heading in body:
+    # Append as a bullet under the existing single heading.
+    path.write_text(body + "\n" + bullet + "\n")
+else:
+    path.write_text(body + "\n\n" + heading + "\n\n" + bullet + "\n")
 PY
 }
 
+list_queue_tasks() {
+  # Space-safe queue expansion preserving lexical order; emits nothing on no match.
+  compgen -G "$QUEUE_GLOB" 2>/dev/null | sort || true
+}
+
+# Tasks already previewed in dry-run, newline-delimited. find_next_task skips
+# these so dry-run advances through the queue instead of repeating the first
+# todo task (status is never mutated in dry-run).
+DRY_RUN_PREVIEWED=""
+
 find_next_task() {
   local task
-  for task in $QUEUE_GLOB; do
+  while IFS= read -r task; do
     [ -e "$task" ] || continue
     if [ "$(frontmatter_value "$task" status)" = "todo" ]; then
+      if [ "$DRY_RUN" = "1" ]; then
+        case "$DRY_RUN_PREVIEWED" in
+          *$'\n'"$task"$'\n'*) continue ;;
+        esac
+      fi
       printf '%s\n' "$task"
       return 0
     fi
-  done
+  done < <(list_queue_tasks)
   return 1
+}
+
+warn_stranded_doing_tasks() {
+  # An interrupted run can leave a task at status: doing. find_next_task only
+  # re-picks status: todo, so surface (do not reclaim) any stranded task.
+  local task
+  while IFS= read -r task; do
+    [ -e "$task" ] || continue
+    if [ "$(frontmatter_value "$task" status)" = "doing" ]; then
+      log "WARNING: task left in status: doing from a prior run (not auto-reclaimed): $task"
+    fi
+  done < <(list_queue_tasks)
 }
 
 task_title() {
@@ -450,9 +494,46 @@ raise SystemExit(1)
 PY
 }
 
-contains_blocked_status() {
+status_line_is_blocked() {
+  # STATUS-contract stages: evaluate only the LAST non-empty STATUS: line so
+  # prose or quoted content elsewhere in the report cannot halt the loop.
   local file="$1"
-  grep -Eq 'STATUS:[[:space:]]*(BLOCKED|NEEDS_CONTEXT)|"blocked"[[:space:]]*:[[:space:]]*true' "$file"
+  "$PYTHON_BIN" - "$file" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+last = ""
+for line in path.read_text(errors="ignore").splitlines():
+    if re.match(r"\s*STATUS:", line):
+        last = line
+if re.search(r"STATUS:\s*(BLOCKED|NEEDS_CONTEXT)\b", last):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+json_blocked_from_last_line() {
+  # JSON-contract stages: inspect only the blocked field of the FINAL JSON line.
+  local file="$1"
+  "$PYTHON_BIN" - "$file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+for line in reversed(path.read_text(errors="ignore").splitlines()):
+    line = line.strip()
+    if not line.startswith("{") or not line.endswith("}"):
+        continue
+    try:
+        obj = json.loads(line)
+    except Exception:
+        continue
+    raise SystemExit(0 if obj.get("blocked") is True else 1)
+raise SystemExit(1)
+PY
 }
 
 prompt_file_for_stage() {
@@ -529,15 +610,27 @@ mark_blocked_and_stop() {
   exit 1
 }
 
-gh_pr_view_field() {
+gh_pr_view_state_merged_at() {
+  # Single gh call fetching both fields; prints state then mergedAt on two lines.
   local pr_url="$1"
-  local field="$2"
+  local json
 
   if [ -n "$pr_url" ]; then
-    "$GH_BIN" pr view "$pr_url" --json "$field" -q ".$field"
+    json="$("$GH_BIN" pr view "$pr_url" --json state,mergedAt)"
   else
-    "$GH_BIN" pr view --json "$field" -q ".$field"
+    json="$("$GH_BIN" pr view --json state,mergedAt)"
   fi
+
+  printf '%s' "$json" | "$PYTHON_BIN" -c '
+import json, sys
+try:
+    obj = json.load(sys.stdin)
+except Exception:
+    obj = {}
+print(obj.get("state") or "")
+merged = obj.get("mergedAt")
+print("" if merged is None else merged)
+'
 }
 
 poll_until_merged() {
@@ -557,9 +650,10 @@ poll_until_merged() {
   write_status "waiting" "poll-merge" "waiting" "waiting for human merge; url=${pr_url:-unknown}" "$task" "$CURRENT_ITERATION" "$pr_url"
 
   while true; do
-    local state merged_at now elapsed
-    state="$(gh_pr_view_field "$pr_url" state 2>/dev/null || true)"
-    merged_at="$(gh_pr_view_field "$pr_url" mergedAt 2>/dev/null || true)"
+    local state merged_at now elapsed pr_fields
+    pr_fields="$(gh_pr_view_state_merged_at "$pr_url" 2>/dev/null || true)"
+    state="$(printf '%s\n' "$pr_fields" | sed -n '1p')"
+    merged_at="$(printf '%s\n' "$pr_fields" | sed -n '2p')"
     if [ "$state" = "MERGED" ] || { [ -n "$merged_at" ] && [ "$merged_at" != "null" ]; }; then
       log "PR merged: ${pr_url:-current branch PR}"
       write_status "running" "poll-merge" "completed" "PR merged: ${pr_url:-current branch PR}" "$task" "$CURRENT_ITERATION" "$pr_url"
@@ -809,7 +903,7 @@ run_status_stage_attempt() {
     rc=$?
     return "$rc"
   }
-  if contains_blocked_status "$output_file"; then
+  if status_line_is_blocked "$output_file"; then
     mark_blocked_and_stop "$task" "$stage session reported blocked or needs context"
   fi
 }
@@ -842,7 +936,7 @@ run_json_stage_attempt() {
     rc=$?
     return "$rc"
   }
-  if contains_blocked_status "$output_file"; then
+  if json_blocked_from_last_line "$output_file"; then
     mark_blocked_and_stop "$task" "$stage session reported blocked"
   fi
   if ! has_json_last_line "$output_file"; then
@@ -930,6 +1024,10 @@ run_iteration() {
   local ship pr_url
   ship="$(run_json_stage "$task" "$iter_dir" "10-ship" "$REVIEW_MODEL" "$(build_ship_prompt "$task")")"
   pr_url="$(json_string_from_last_line "$ship" pr_url)"
+  if [ -z "$pr_url" ]; then
+    CURRENT_STAGE="10-ship"
+    mark_blocked_and_stop "$task" "ship stage returned no pr_url"
+  fi
   poll_until_merged "$task" "$pr_url"
   sync_base_after_merge "$task"
 
@@ -942,6 +1040,7 @@ run_iteration() {
 main() {
   log "agile-loop start repo=$REPO base=$BASE max_iterations=$MAX_ITERATIONS queue=$QUEUE_GLOB"
   write_status "running" "start" "running" "agile-loop started" "" ""
+  warn_stranded_doing_tasks
   local iteration task
   iteration=1
   while [ "$iteration" -le "$MAX_ITERATIONS" ]; do
@@ -949,6 +1048,11 @@ main() {
       log "no todo tasks found"
       write_status "idle" "idle" "idle" "no todo tasks found" "$CURRENT_TASK" "$CURRENT_ITERATION"
       exit 0
+    fi
+    if [ "$DRY_RUN" = "1" ]; then
+      # Record the previewed task so the next find_next_task advances past it;
+      # status is never mutated in dry-run, so find_next_task cannot rely on it.
+      DRY_RUN_PREVIEWED="${DRY_RUN_PREVIEWED}"$'\n'"$task"$'\n'
     fi
     run_iteration "$task" "$iteration"
     iteration=$((iteration + 1))
