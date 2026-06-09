@@ -71,12 +71,12 @@ mkdir -p "$(dirname "$out")"
 stage="unknown"
 if grep -q "stage: plan" <<<"$prompt"; then stage="plan"; fi
 if grep -q "stage: implement" <<<"$prompt"; then stage="implement"; fi
-if grep -q "coderabbit review pass 1" <<<"$prompt"; then stage="coderabbit-pass-1"; fi
-if grep -q "remediate coderabbit" <<<"$prompt"; then stage="remediate-coderabbit"; fi
+if grep -q "deep review pass 1" <<<"$prompt"; then stage="deep-review-pass-1"; fi
+if grep -q "remediate deep review" <<<"$prompt"; then stage="remediate-deep-review"; fi
 if grep -q "gstack review" <<<"$prompt"; then stage="gstack-review"; fi
 if grep -q "qa-only full" <<<"$prompt"; then stage="qa-only"; fi
 if grep -q "remediate qa" <<<"$prompt"; then stage="remediate-qa"; fi
-if grep -q "coderabbit review pass 2" <<<"$prompt"; then stage="coderabbit-pass-2"; fi
+if grep -q "deep review pass 2" <<<"$prompt"; then stage="deep-review-pass-2"; fi
 if grep -q "stage: ship" <<<"$prompt"; then stage="ship"; fi
 
 echo "$stage exec=$saw_exec ephemeral=$saw_ephemeral resume=$saw_resume" >> "${FAKE_CODEX_LOG:?}"
@@ -100,8 +100,8 @@ if [ -n "${FAKE_SLEEP_STAGE:-}" ] && [ "$stage" = "$FAKE_SLEEP_STAGE" ]; then
 fi
 
 case "$stage" in
-  coderabbit-pass-1|coderabbit-pass-2)
-    printf 'CodeRabbit fake output\n{"critical":%s,"major":%s,"minor":0,"blocked":false,"summary":"fake"}\n' "${FAKE_CRITICAL:-0}" "${FAKE_MAJOR:-0}" > "$out"
+  deep-review-pass-1|deep-review-pass-2)
+    printf 'Deep review fake output\n{"critical":%s,"major":%s,"minor":0,"blocked":false,"summary":"fake"}\n' "${FAKE_CRITICAL:-0}" "${FAKE_MAJOR:-0}" > "$out"
     ;;
   qa-only)
     printf 'QA fake output\n{"issues":%s,"blocked":false,"report":"fake"}\n' "${FAKE_QA_ISSUES:-0}" > "$out"
@@ -404,13 +404,13 @@ assert_all_fresh_sessions "$repo_zero/codex.log"
 assert_session_sequence "$repo_zero/codex.log" \
   plan \
   implement \
-  coderabbit-pass-1 \
+  deep-review-pass-1 \
   gstack-review \
   qa-only \
-  coderabbit-pass-2 \
+  deep-review-pass-2 \
   ship
 assert_prompts_include_session_contract "$repo_zero"
-assert_not_contains "$repo_zero/codex.log" "remediate-coderabbit"
+assert_not_contains "$repo_zero/codex.log" "remediate-deep-review"
 assert_not_contains "$repo_zero/codex.log" "remediate-qa"
 [ "$(status_of "$repo_zero/docs/agile-loop/tasks/001-test.md")" = "done" ]
 assert_json_value "$repo_zero/.agile-loop/status.json" status completed
@@ -422,20 +422,20 @@ assert_contains "$repo_zero/git.log" "^switch main$"
 assert_contains "$repo_zero/git.log" "^merge --ff-only refs/remotes/origin/main$"
 assert_not_contains "$repo_zero/git.log" "^pull "
 
-repo_cr="$(run_case coderabbit-blockers 1 0 0 0 0)"
+repo_cr="$(run_case deep-review-blockers 1 0 0 0 0)"
 assert_all_fresh_sessions "$repo_cr/codex.log"
 assert_session_sequence "$repo_cr/codex.log" \
   plan \
   implement \
-  coderabbit-pass-1 \
-  remediate-coderabbit \
+  deep-review-pass-1 \
+  remediate-deep-review \
   gstack-review \
   qa-only \
-  coderabbit-pass-2 \
-  remediate-coderabbit \
+  deep-review-pass-2 \
+  remediate-deep-review \
   ship
 assert_prompts_include_session_contract "$repo_cr"
-assert_contains "$repo_cr/codex.log" "remediate-coderabbit"
+assert_contains "$repo_cr/codex.log" "remediate-deep-review"
 [ "$(status_of "$repo_cr/docs/agile-loop/tasks/001-test.md")" = "done" ]
 assert_json_value "$repo_cr/.agile-loop/status.json" status completed
 
@@ -444,11 +444,11 @@ assert_all_fresh_sessions "$repo_qa/codex.log"
 assert_session_sequence "$repo_qa/codex.log" \
   plan \
   implement \
-  coderabbit-pass-1 \
+  deep-review-pass-1 \
   gstack-review \
   qa-only \
   remediate-qa \
-  coderabbit-pass-2 \
+  deep-review-pass-2 \
   ship
 assert_prompts_include_session_contract "$repo_qa"
 assert_contains "$repo_qa/codex.log" "remediate-qa"

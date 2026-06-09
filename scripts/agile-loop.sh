@@ -669,11 +669,11 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 EOF
 }
 
-build_coderabbit_prompt() {
+build_deep_review_prompt() {
   local task="$1"
   local pass="$2"
   cat <<EOF
-You are running agile-loop stage: coderabbit review pass $pass.
+You are running agile-loop stage: deep review pass $pass.
 
 Repository: $REPO
 Base branch: $BASE
@@ -681,18 +681,23 @@ Task file: $task
 
 $(stage_session_contract)
 
-Use coderabbit:code-review. Run CodeRabbit against the current branch, passing AGENTS.md as review context when available. Do not apply fixes in this stage.
+Perform a rigorous, senior-level code review of the current branch's diff against $BASE, covering correctness, security, edge cases, error handling, and simplification/efficiency. Use AGENTS.md as additional context when present. This stage is report-only: do not apply fixes.
+
+Classify each finding by severity:
+- critical: correctness/security defects unsafe to merge or that break the feature.
+- major: likely bugs, missing error handling, or significant design problems.
+- minor: style, naming, small cleanups, or non-blocking suggestions.
 
 Summarize issues by severity. The final line of your response must be exactly one JSON object:
 {"critical":0,"major":0,"minor":0,"blocked":false,"summary":"short summary"}
 EOF
 }
 
-build_coderabbit_remediation_prompt() {
+build_deep_review_remediation_prompt() {
   local task="$1"
   local review_output="$2"
   cat <<EOF
-You are running agile-loop stage: remediate coderabbit.
+You are running agile-loop stage: remediate deep review.
 
 Repository: $REPO
 Base branch: $BASE
@@ -702,7 +707,7 @@ Maximum remediation sub-agents: $MAX_PARALLEL_REMEDIATION
 
 $(stage_session_contract)
 
-Read the CodeRabbit output. Only if it contains Critical or Major issues, spawn scoped sub-agents to fix those issues. Keep each sub-agent's write scope disjoint and tied to one finding or file group. Do not fix Minor issues unless they are necessary for a Critical or Major fix.
+Read the deep-review output. Only if it contains Critical or Major issues, spawn scoped sub-agents to fix those issues. Keep each sub-agent's write scope disjoint and tied to one finding or file group. Do not fix Minor issues unless they are necessary for a Critical or Major fix.
 
 Run targeted validation for the changed files. End with:
 STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
@@ -868,7 +873,7 @@ run_iteration() {
   write_status "running" "claim" "running" "claiming task: $(task_title "$task")" "$task" "$iteration"
   if [ "$DRY_RUN" = "1" ]; then
     echo "DRY RUN: next task $task"
-    echo "DRY RUN: would run plan -> implement -> coderabbit -> conditional remediation -> review -> qa -> conditional investigate -> coderabbit -> conditional remediation -> ship -> poll merge -> sync base"
+    echo "DRY RUN: would run plan -> implement -> deep-review -> conditional remediation -> review -> qa -> conditional investigate -> deep-review -> conditional remediation -> ship -> poll merge -> sync base"
     write_status "dry_run" "dry-run" "completed" "dry-run printed planned sessions for $(task_title "$task")" "$task" "$iteration"
     return 0
   fi
@@ -879,15 +884,15 @@ run_iteration() {
   run_status_stage "$task" "$iter_dir" "01-plan" "$DEFAULT_MODEL" "$(build_plan_prompt "$task")"
   run_status_stage "$task" "$iter_dir" "02-implement" "$IMPLEMENTATION_MODEL" "$(build_implement_prompt "$task")"
 
-  local cr1 cr1_critical cr1_major
-  cr1="$(run_json_stage "$task" "$iter_dir" "03-coderabbit-pass-1" "$REVIEW_MODEL" "$(build_coderabbit_prompt "$task" "1")")"
-  cr1_critical="$(json_int_from_last_line "$cr1" critical)"
-  cr1_major="$(json_int_from_last_line "$cr1" major)"
-  if [ $((cr1_critical + cr1_major)) -gt 0 ]; then
-    run_status_stage "$task" "$iter_dir" "04-remediate-coderabbit-pass-1" "$REVIEW_MODEL" "$(build_coderabbit_remediation_prompt "$task" "$cr1")"
+  local dr1 dr1_critical dr1_major
+  dr1="$(run_json_stage "$task" "$iter_dir" "03-deep-review-pass-1" "$REVIEW_MODEL" "$(build_deep_review_prompt "$task" "1")")"
+  dr1_critical="$(json_int_from_last_line "$dr1" critical)"
+  dr1_major="$(json_int_from_last_line "$dr1" major)"
+  if [ $((dr1_critical + dr1_major)) -gt 0 ]; then
+    run_status_stage "$task" "$iter_dir" "04-remediate-deep-review-pass-1" "$REVIEW_MODEL" "$(build_deep_review_remediation_prompt "$task" "$dr1")"
   else
-    log "CodeRabbit pass 1 has no Critical/Major issues; skipping remediation"
-    write_status "running" "04-remediate-coderabbit-pass-1" "skipped" "CodeRabbit pass 1 has no Critical/Major issues; skipping remediation" "$task" "$iteration"
+    log "Deep review pass 1 has no Critical/Major issues; skipping remediation"
+    write_status "running" "04-remediate-deep-review-pass-1" "skipped" "Deep review pass 1 has no Critical/Major issues; skipping remediation" "$task" "$iteration"
   fi
 
   run_status_stage "$task" "$iter_dir" "05-gstack-review" "$REVIEW_MODEL" "$(build_review_prompt "$task")"
@@ -902,15 +907,15 @@ run_iteration() {
     write_status "running" "07-remediate-qa" "skipped" "QA reported 0 issues; skipping investigate remediation" "$task" "$iteration"
   fi
 
-  local cr2 cr2_critical cr2_major
-  cr2="$(run_json_stage "$task" "$iter_dir" "08-coderabbit-pass-2" "$REVIEW_MODEL" "$(build_coderabbit_prompt "$task" "2")")"
-  cr2_critical="$(json_int_from_last_line "$cr2" critical)"
-  cr2_major="$(json_int_from_last_line "$cr2" major)"
-  if [ $((cr2_critical + cr2_major)) -gt 0 ]; then
-    run_status_stage "$task" "$iter_dir" "09-remediate-coderabbit-pass-2" "$REVIEW_MODEL" "$(build_coderabbit_remediation_prompt "$task" "$cr2")"
+  local dr2 dr2_critical dr2_major
+  dr2="$(run_json_stage "$task" "$iter_dir" "08-deep-review-pass-2" "$REVIEW_MODEL" "$(build_deep_review_prompt "$task" "2")")"
+  dr2_critical="$(json_int_from_last_line "$dr2" critical)"
+  dr2_major="$(json_int_from_last_line "$dr2" major)"
+  if [ $((dr2_critical + dr2_major)) -gt 0 ]; then
+    run_status_stage "$task" "$iter_dir" "09-remediate-deep-review-pass-2" "$REVIEW_MODEL" "$(build_deep_review_remediation_prompt "$task" "$dr2")"
   else
-    log "CodeRabbit pass 2 has no Critical/Major issues; skipping remediation"
-    write_status "running" "09-remediate-coderabbit-pass-2" "skipped" "CodeRabbit pass 2 has no Critical/Major issues; skipping remediation" "$task" "$iteration"
+    log "Deep review pass 2 has no Critical/Major issues; skipping remediation"
+    write_status "running" "09-remediate-deep-review-pass-2" "skipped" "Deep review pass 2 has no Critical/Major issues; skipping remediation" "$task" "$iteration"
   fi
 
   local ship pr_url
