@@ -2,9 +2,11 @@
 
 Agile Loop uses these prompt shapes for fresh child agent sessions. Both supported adapters template the same shapes: the Codex adapter (`scripts/agile-loop.sh`) sends them through `codex exec --ephemeral`, and the Claude Code adapter (`SKILL.md`) sends them through `claude -p`. Keep final JSON lines intact; adapters use them for branching and retry JSON-contract stages when the final JSON line is missing. Child sessions must reconstruct context from the repository, task file, and explicit output files rather than prior session history.
 
+**Model tiers and effort.** Per stage, **implementation** uses each host's second-best model; **every other stage** uses the best/latest model (shown inline below as `Model tier:`). Effort layers on top: the Claude adapter runs **implementation** and the **code-review** stages (deep-review and GStack `/review`) at `--effort max`, and every other stage at default effort. Resolve tiers to concrete ids per host, shifting them up as newer releases land: Claude uses `claude-opus-4-8` (best/latest, via the `opus` alias) / `claude-opus-4-7` (second-best); the Codex adapter uses `gpt-5.5` / `gpt-5.4`.
+
 ## Planning Session
 
-Plan tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
 You are running agile-loop stage: plan.
@@ -25,7 +27,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## Implementation Session
 
-Implementation tier — Codex: `gpt-5.4`, Claude: `claude-opus-4-7`.
+Model tier: **second-best** — Claude `claude-opus-4-7`, Codex `gpt-5.4`.
 
 ```
 You are running agile-loop stage: implement.
@@ -37,7 +39,16 @@ Task file: {task_file}
 Session isolation:
 This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
-Use superpowers:subagent-driven-development to execute the current Superpowers plan task-by-task. Keep changes scoped to the plan. Run the plan's verification commands. Do not ship or create a PR.
+Drive this stage through the installed Superpowers plugin's full implementation discipline. Invoke each as a Skill (engage the installed plugin — do not merely imitate the workflow):
+
+1. superpowers:subagent-driven-development — execute the current Superpowers plan task-by-task: a fresh implementer subagent per task, then the two-stage spec-compliance then code-quality review it prescribes, and a final whole-implementation review at the end.
+2. superpowers:test-driven-development — implementer subagents write a failing test and watch it fail before any production code (RED → GREEN → REFACTOR). No production code without a failing test first.
+3. superpowers:systematic-debugging — when a test fails or behavior is unexpected, root-cause it with this skill instead of guessing.
+4. superpowers:verification-before-completion — before reporting DONE, run the plan's verification commands fresh and confirm the output. Evidence before claims.
+
+Keep all changes scoped to the plan. Per-task commits on the working branch are expected.
+
+Do not cross the ship boundary: do NOT run superpowers:finishing-a-development-branch, do NOT open a PR, and do NOT merge or push to the base branch. Review, QA, and ship are later agile-loop stages — leave the work committed on the branch and stop.
 
 Stop with BLOCKED if tests fail and cannot be fixed inside the task scope, if mandatory user judgment is needed, or if the plan is missing.
 End with:
@@ -46,7 +57,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## Deep Review Session
 
-Review tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 Each host runs the review with its strongest code-review capability: the Claude Code adapter uses the built-in `/code-review` at high effort; the Codex adapter performs an equivalent rigorous senior-level review. The prompt body below stays host-neutral.
 
@@ -73,7 +84,7 @@ Summarize issues by severity. The final line of your response must be exactly on
 
 ## Deep Review Remediation Session
 
-Review tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
 You are running agile-loop stage: remediate deep review.
@@ -95,7 +106,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## GStack Review Session
 
-Review tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
 You are running agile-loop stage: gstack review.
@@ -114,7 +125,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## QA Session
 
-Review tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
 You are running agile-loop stage: qa-only full.
@@ -134,7 +145,7 @@ The final line of your response must be exactly one JSON object:
 
 ## QA Remediation Session
 
-Review tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
 You are running agile-loop stage: remediate qa.
@@ -156,7 +167,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## Ship Session
 
-Review tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
 You are running agile-loop stage: ship.

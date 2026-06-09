@@ -7,7 +7,7 @@ allowed-tools:
   - Write
   - Edit
   - Glob
-argument-hint: "[--repo PATH] [--base BRANCH] [--max-iterations N] [--poll-interval SECONDS] [--default-model ID] [--implementation-model ID] [--review-model ID] [--unsafe-bypass-approvals] [--dry-run]"
+argument-hint: "[--repo PATH] [--base BRANCH] [--max-iterations N] [--poll-interval SECONDS] [--unsafe-bypass-approvals] [--dry-run]"
 ---
 
 # Agile Loop — Claude Code adapter
@@ -18,7 +18,7 @@ When you spawn a child via `claude -p "<prompt>"`, that is the Claude-side equiv
 
 ## Pre-flight
 
-1. Parse args (all optional): `--repo PATH` (default `$PWD`), `--base BRANCH` (default `main`), `--max-iterations N` (default 10), `--poll-interval SECONDS` (default 60), `--unsafe-bypass-approvals` (boolean), `--dry-run` (boolean). `cd` into the resolved repo root. Also parse --default-model ID (default claude-opus-4-8), --implementation-model ID (default claude-opus-4-7), and --review-model ID (default claude-opus-4-8).
+1. Parse args (all optional): `--repo PATH` (default `$PWD`), `--base BRANCH` (default `main`), `--max-iterations N` (default 10), `--poll-interval SECONDS` (default 60), `--unsafe-bypass-approvals` (boolean), `--dry-run` (boolean). `cd` into the resolved repo root.
 2. Resolve approval bypass: live runs require either `--unsafe-bypass-approvals` or `AGILE_LOOP_UNSAFE_BYPASS=1` in the environment. If neither is set and `--dry-run` is also not set, stop with a clear blocked message — the Codex adapter has the same gate (`scripts/agile-loop.sh`).
 3. Confirm `git`, `gh`, `claude`, and `python3` are on `PATH`. If any are missing, write a blocked status with a clear message and stop.
 4. Create `.agile-loop/` and `.agile-loop/runs/<RUN_ID>/` if missing. Generate a `RUN_ID` (UTC timestamp + short random).
@@ -31,7 +31,7 @@ For every agent-backed step, spawn one fresh child via `Bash`:
 
 ```bash
 claude -p "$(cat .agile-loop/runs/$RUN_ID/<stage>.prompt.md)" \
-  --model "<stage-model>" \
+  --model <stage-model> \
   --output-format text \
   --dangerously-skip-permissions \
   > .agile-loop/runs/$RUN_ID/<stage>.output.md \
@@ -39,8 +39,40 @@ claude -p "$(cat .agile-loop/runs/$RUN_ID/<stage>.prompt.md)" \
 ```
 
 - `--dangerously-skip-permissions` is required so the child can write files and run shell commands without prompting. Only pass it when the parent loop is gated by `--unsafe-bypass-approvals` / `AGILE_LOOP_UNSAFE_BYPASS=1`. In `--dry-run` mode, do not spawn the child at all — log "DRY RUN: would run stage=<stage>".
-- Route each stage to a model: plan uses --default-model (default claude-opus-4-8), implement uses --implementation-model (default claude-opus-4-7), and deep-review / gstack-review / qa / all remediation / ship use --review-model (default claude-opus-4-8). This puts the review tier one notch above implementation, mirroring the Codex adapter's review/implementation tier split. <stage-model> above is the resolved model for the stage; if a model flag is set to an empty string, omit --model for that stage so the child inherits the parent session's model. These Opus identifiers are Claude-side only — the GPT model identifiers stay in the Codex adapter.
+- `--model <stage-model>` is mandatory on **every** stage — never let a stage silently inherit an ambient default model. The implementation and code-review stages additionally pass `--effort max`; every other stage runs at default effort (omit `--effort`). Resolve both from the stage's row in **Model and effort routing** below and pass them explicitly on each `claude -p` call.
 - Build each prompt file first using the inline templates in **Prompt templates**.
+
+## Model and effort routing
+
+Three buckets. Implementation is the only version-pinned stage; every other stage just rides the latest Opus.
+
+- **Implementation → second-best Opus, `--effort max`.** Pin it one rung below the latest release, so the best model is the one reviewing what the second-best model wrote.
+- **Code review (both deep-review passes and GStack `/review`) → latest Opus, `--effort max`.** The best Opus, at full effort, judges the diff.
+- **Every other stage (plan, deep-review/QA remediation, QA, ship) → latest Opus, default effort.** No special routing — just the latest Opus model, at its default effort.
+
+"Latest Opus" is the `opus` model alias — the newest Opus release, which currently resolves to `claude-opus-4-8`. "Second-best Opus" has no alias, so pin it explicitly; it is currently `claude-opus-4-7`. When a newer Opus ships, the latest-Opus stages follow the `opus` alias automatically — you only bump the second-best pin.
+
+| Tier | How to pass it |
+| --- | --- |
+| Latest / best Opus | `--model opus` (currently `claude-opus-4-8`) |
+| Second-best Opus | `--model claude-opus-4-7` (bump on each new Opus release) |
+
+Per-stage routing (`<stage-model>` for each `claude -p` invocation):
+
+| Stage (`stage` value) | `--model` | `--effort` |
+| --- | --- | --- |
+| `plan` | `opus` (latest) | default — omit `--effort` |
+| `implement` | `claude-opus-4-7` (second-best) | `max` |
+| `deep-review` (pass 1 and 2) | `opus` (latest) | `max` |
+| `remediate-deep-review` | `opus` (latest) | default — omit `--effort` |
+| `gstack-review` | `opus` (latest) | `max` |
+| `qa` | `opus` (latest) | default — omit `--effort` |
+| `remediate-qa` | `opus` (latest) | default — omit `--effort` |
+| `ship` | `opus` (latest) | default — omit `--effort` |
+
+Only `implement`, `deep-review`, and `gstack-review` pass `--effort max`; the rest omit `--effort` and run at the model's default effort.
+
+The Codex adapter (`scripts/agile-loop.sh`) mirrors the model split: implementation on the second-best model (`--implementation-model`), every other stage on the best/latest model (`--default-model` / `--review-model`).
 
 ## Per-iteration loop
 
@@ -57,7 +89,7 @@ For up to `--max-iterations` iterations, or until the queue is empty:
 The steps (identical contract to `scripts/agile-loop.sh`):
 
 1. **Plan** — `Planning Session` template. Convert the task into a Superpowers plan.
-2. **Implement** — `Implementation Session` template. Run `superpowers:subagent-driven-development`.
+2. **Implement** — `Implementation Session` template. Drive the full Superpowers implementation discipline: `subagent-driven-development` (per-task implement + two-stage review) with `test-driven-development` per task, `systematic-debugging` when stuck, and a `verification-before-completion` gate. Stop before `finishing-a-development-branch` — shipping is step 10.
 3. **Deep review pass 1** — `Deep Review Session` template, `{pass}=1`. Parse the final JSON line `{"critical","major","minor","blocked","summary"}`.
 4. **Remediate deep review** — `Deep Review Remediation Session` template. Only spawn if pass 1 has `critical>0 || major>0`. Pass the pass-1 output file path as `{review_output}`.
 5. **GStack review** — `GStack Review Session` template. Runs `/review`.
@@ -68,7 +100,7 @@ The steps (identical contract to `scripts/agile-loop.sh`):
 10. **Ship** — `Ship Session` template. Parse the final JSON line `{"blocked","pr_url","summary"}`. Capture `pr_url`.
 11. **Poll for merge** — see **Post-merge handling** below.
 
-Update status.json before and after each step. Use `stage` values `plan`, `implement`, `deep-review`, `remediate-deep-review`, `gstack-review`, `qa`, `remediate-qa`, `ship`.
+Spawn each step's child with the `--model` and effort from **Model and effort routing**: implementation on the second-best Opus at `--effort max`, code review (deep-review and GStack `/review`) on the latest Opus at `--effort max`, and every other stage on the latest Opus at default effort. Update status.json before and after each step. Use `stage` values `plan`, `implement`, `deep-review`, `remediate-deep-review`, `gstack-review`, `qa`, `remediate-qa`, `ship`.
 
 ### Retry policy per agent-backed step
 
@@ -129,7 +161,16 @@ Task file: {task_file}
 
 <<session-isolation>>
 
-Use superpowers:subagent-driven-development to execute the current Superpowers plan task-by-task. Keep changes scoped to the plan. Run the plan's verification commands. Do not ship or create a PR.
+Drive this stage through the installed Superpowers plugin's full implementation discipline. Invoke each as a Skill (engage the installed plugin — do not merely imitate the workflow):
+
+1. superpowers:subagent-driven-development — execute the current Superpowers plan task-by-task: a fresh implementer subagent per task, then the two-stage spec-compliance then code-quality review it prescribes, and a final whole-implementation review at the end.
+2. superpowers:test-driven-development — implementer subagents write a failing test and watch it fail before any production code (RED → GREEN → REFACTOR). No production code without a failing test first.
+3. superpowers:systematic-debugging — when a test fails or behavior is unexpected, root-cause it with this skill instead of guessing.
+4. superpowers:verification-before-completion — before reporting DONE, run the plan's verification commands fresh and confirm the output. Evidence before claims.
+
+Keep all changes scoped to the plan. Per-task commits on the working branch are expected.
+
+Do not cross the ship boundary: do NOT run superpowers:finishing-a-development-branch, do NOT open a PR, and do NOT merge or push to the base branch. Review, QA, and ship are later agile-loop stages — leave the work committed on the branch and stop.
 
 Stop with BLOCKED if tests fail and cannot be fixed inside the task scope, if mandatory user judgment is needed, or if the plan is missing.
 End with:
