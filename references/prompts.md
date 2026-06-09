@@ -4,7 +4,7 @@ Agile Loop uses these prompt shapes for fresh child agent sessions. Both support
 
 ## Planning Session
 
-Use model `gpt-5.5`.
+Plan tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
 
 ```
 You are running agile-loop stage: plan.
@@ -25,7 +25,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## Implementation Session
 
-Use model `gpt-5.4`.
+Implementation tier — Codex: `gpt-5.4`, Claude: `claude-opus-4-7`.
 
 ```
 You are running agile-loop stage: implement.
@@ -44,12 +44,12 @@ End with:
 STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 ```
 
-## CodeRabbit Session
+## Deep Review Session
 
-Use model `gpt-5.5`.
+Review tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
 
 ```
-You are running agile-loop stage: coderabbit review pass {pass}.
+You are running agile-loop stage: deep review pass {pass}.
 
 Repository: {repo}
 Base branch: {base}
@@ -58,18 +58,23 @@ Task file: {task_file}
 Session isolation:
 This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
-Use coderabbit:code-review. Run CodeRabbit against the current branch, passing AGENTS.md as review context when available. Do not apply fixes in this stage.
+Review the current branch's diff against {base} with the host's strongest code-review capability (Claude Code: the built-in /code-review at high effort; Codex: an equivalent rigorous senior-level review covering correctness, security, edge cases, error handling, and simplification/efficiency). Pass AGENTS.md as additional context when present. This stage is report-only: do not apply fixes.
+
+Classify each finding by severity:
+- critical: correctness/security defects unsafe to merge or that break the feature.
+- major: likely bugs, missing error handling, or significant design problems.
+- minor: style, naming, small cleanups, or non-blocking suggestions.
 
 Summarize issues by severity. The final line of your response must be exactly one JSON object:
 {"critical":0,"major":0,"minor":0,"blocked":false,"summary":"short summary"}
 ```
 
-## CodeRabbit Remediation Session
+## Deep Review Remediation Session
 
-Use model `gpt-5.5`.
+Review tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
 
 ```
-You are running agile-loop stage: remediate coderabbit.
+You are running agile-loop stage: remediate deep review.
 
 Repository: {repo}
 Base branch: {base}
@@ -80,7 +85,7 @@ Maximum remediation sub-agents: {max_parallel_remediation}
 Session isolation:
 This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
-Read the CodeRabbit output. Only if it contains Critical or Major issues, spawn scoped sub-agents to fix those issues. Keep each sub-agent's write scope disjoint and tied to one finding or file group. Do not fix Minor issues unless they are necessary for a Critical or Major fix.
+Read the deep-review output. Only if it contains Critical or Major issues, spawn scoped sub-agents to fix those issues. Keep each sub-agent's write scope disjoint and tied to one finding or file group. Do not fix Minor issues unless they are necessary for a Critical or Major fix.
 
 Run targeted validation for the changed files. End with:
 STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
@@ -88,7 +93,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## GStack Review Session
 
-Use model `gpt-5.5`.
+Review tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
 
 ```
 You are running agile-loop stage: gstack review.
@@ -107,7 +112,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## QA Session
 
-Use model `gpt-5.5`.
+Review tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
 
 ```
 You are running agile-loop stage: qa-only full.
@@ -127,7 +132,7 @@ The final line of your response must be exactly one JSON object:
 
 ## QA Remediation Session
 
-Use model `gpt-5.5`.
+Review tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
 
 ```
 You are running agile-loop stage: remediate qa.
@@ -149,7 +154,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## Ship Session
 
-Use model `gpt-5.5`.
+Review tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
 
 ```
 You are running agile-loop stage: ship.

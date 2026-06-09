@@ -1,13 +1,13 @@
 ---
 name: agile-loop
-description: Run the queued GStack → GSD → Superpowers → CodeRabbit → ship loop end-to-end. Reads tasks from `docs/agile-loop/tasks/*.md`, spawns isolated child sessions per stage, opens one PR per task, and waits for the human to merge before continuing. Use when asked to "run the agile loop", "process the next queued task", or "drive the autonomous engineering loop".
+description: Run the queued GStack → GSD → Superpowers → review → ship loop end-to-end. Reads tasks from `docs/agile-loop/tasks/*.md`, spawns isolated child sessions per stage, opens one PR per task, and waits for the human to merge before continuing. Use when asked to "run the agile loop", "process the next queued task", or "drive the autonomous engineering loop".
 allowed-tools:
   - Bash
   - Read
   - Write
   - Edit
   - Glob
-argument-hint: "[--repo PATH] [--base BRANCH] [--max-iterations N] [--poll-interval SECONDS] [--unsafe-bypass-approvals] [--dry-run]"
+argument-hint: "[--repo PATH] [--base BRANCH] [--max-iterations N] [--poll-interval SECONDS] [--default-model ID] [--implementation-model ID] [--review-model ID] [--unsafe-bypass-approvals] [--dry-run]"
 ---
 
 # Agile Loop — Claude Code adapter
@@ -18,7 +18,7 @@ When you spawn a child via `claude -p "<prompt>"`, that is the Claude-side equiv
 
 ## Pre-flight
 
-1. Parse args (all optional): `--repo PATH` (default `$PWD`), `--base BRANCH` (default `main`), `--max-iterations N` (default 10), `--poll-interval SECONDS` (default 60), `--unsafe-bypass-approvals` (boolean), `--dry-run` (boolean). `cd` into the resolved repo root.
+1. Parse args (all optional): `--repo PATH` (default `$PWD`), `--base BRANCH` (default `main`), `--max-iterations N` (default 10), `--poll-interval SECONDS` (default 60), `--unsafe-bypass-approvals` (boolean), `--dry-run` (boolean). `cd` into the resolved repo root. Also parse --default-model ID (default claude-opus-4-8), --implementation-model ID (default claude-opus-4-7), and --review-model ID (default claude-opus-4-8).
 2. Resolve approval bypass: live runs require either `--unsafe-bypass-approvals` or `AGILE_LOOP_UNSAFE_BYPASS=1` in the environment. If neither is set and `--dry-run` is also not set, stop with a clear blocked message — the Codex adapter has the same gate (`scripts/agile-loop.sh`).
 3. Confirm `git`, `gh`, `claude`, and `python3` are on `PATH`. If any are missing, write a blocked status with a clear message and stop.
 4. Create `.agile-loop/` and `.agile-loop/runs/<RUN_ID>/` if missing. Generate a `RUN_ID` (UTC timestamp + short random).
@@ -31,6 +31,7 @@ For every agent-backed step, spawn one fresh child via `Bash`:
 
 ```bash
 claude -p "$(cat .agile-loop/runs/$RUN_ID/<stage>.prompt.md)" \
+  --model "<stage-model>" \
   --output-format text \
   --dangerously-skip-permissions \
   > .agile-loop/runs/$RUN_ID/<stage>.output.md \
@@ -38,7 +39,7 @@ claude -p "$(cat .agile-loop/runs/$RUN_ID/<stage>.prompt.md)" \
 ```
 
 - `--dangerously-skip-permissions` is required so the child can write files and run shell commands without prompting. Only pass it when the parent loop is gated by `--unsafe-bypass-approvals` / `AGILE_LOOP_UNSAFE_BYPASS=1`. In `--dry-run` mode, do not spawn the child at all — log "DRY RUN: would run stage=<stage>".
-- The child inherits the parent's Claude model by default. If a user wants stage-specific routing, they can set `ANTHROPIC_MODEL` in the environment or add `--model <id>` to the invocation; this skill does not hard-code model identifiers (the GPT model directives in the Codex adapter's prompts are Codex-specific and intentionally omitted here).
+- Route each stage to a model: plan uses --default-model (default claude-opus-4-8), implement uses --implementation-model (default claude-opus-4-7), and deep-review / gstack-review / qa / all remediation / ship use --review-model (default claude-opus-4-8). This puts the review tier one notch above implementation, mirroring the Codex adapter's review/implementation tier split. <stage-model> above is the resolved model for the stage; if a model flag is set to an empty string, omit --model for that stage so the child inherits the parent session's model. These Opus identifiers are Claude-side only — the GPT model identifiers stay in the Codex adapter.
 - Build each prompt file first using the inline templates in **Prompt templates**.
 
 ## Per-iteration loop
@@ -57,17 +58,17 @@ The steps (identical contract to `scripts/agile-loop.sh`):
 
 1. **Plan** — `Planning Session` template. Convert the task into a Superpowers plan.
 2. **Implement** — `Implementation Session` template. Run `superpowers:subagent-driven-development`.
-3. **CodeRabbit pass 1** — `CodeRabbit Session` template, `{pass}=1`. Parse the final JSON line `{"critical","major","minor","blocked","summary"}`.
-4. **Remediate CodeRabbit** — `CodeRabbit Remediation Session` template. Only spawn if pass 1 has `critical>0 || major>0`. Pass the pass-1 output file path as `{review_output}`.
+3. **Deep review pass 1** — `Deep Review Session` template, `{pass}=1`. Parse the final JSON line `{"critical","major","minor","blocked","summary"}`.
+4. **Remediate deep review** — `Deep Review Remediation Session` template. Only spawn if pass 1 has `critical>0 || major>0`. Pass the pass-1 output file path as `{review_output}`.
 5. **GStack review** — `GStack Review Session` template. Runs `/review`.
 6. **QA** — `QA Session` template. Parse final JSON line `{"issues","blocked","report"}`.
 7. **Remediate QA** — `QA Remediation Session` template. Only if `issues>0`. Pass the QA output path as `{qa_output}`.
-8. **CodeRabbit pass 2** — `CodeRabbit Session` template, `{pass}=2`. Parse the same JSON shape.
-9. **Remediate CodeRabbit pass 2** — only if pass 2 has `critical>0 || major>0`.
+8. **Deep review pass 2** — `Deep Review Session` template, `{pass}=2`. Parse the same JSON shape.
+9. **Remediate deep review pass 2** — only if pass 2 has `critical>0 || major>0`.
 10. **Ship** — `Ship Session` template. Parse the final JSON line `{"blocked","pr_url","summary"}`. Capture `pr_url`.
 11. **Poll for merge** — see **Post-merge handling** below.
 
-Update status.json before and after each step. Use `stage` values `plan`, `implement`, `coderabbit`, `remediate-coderabbit`, `gstack-review`, `qa`, `remediate-qa`, `ship`.
+Update status.json before and after each step. Use `stage` values `plan`, `implement`, `deep-review`, `remediate-deep-review`, `gstack-review`, `qa`, `remediate-qa`, `ship`.
 
 ### Retry policy per agent-backed step
 
@@ -135,10 +136,10 @@ End with:
 STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 ```
 
-### CodeRabbit Session
+### Deep Review Session
 
 ```
-You are running agile-loop stage: coderabbit review pass {pass}.
+You are running agile-loop stage: deep review pass {pass}.
 
 Repository: {repo}
 Base branch: {base}
@@ -146,16 +147,21 @@ Task file: {task_file}
 
 <<session-isolation>>
 
-Use coderabbit:code-review. Run CodeRabbit against the current branch, passing AGENTS.md as review context when available. Do not apply fixes in this stage.
+Use the built-in /code-review skill at high effort to review the current branch's diff against {base}. Pass AGENTS.md as additional review context when present. This stage is report-only: do not apply fixes.
+
+Classify each finding by severity:
+- critical: correctness/security defects unsafe to merge or that break the feature.
+- major: likely bugs, missing error handling, or significant design problems.
+- minor: style, naming, small cleanups, or non-blocking suggestions.
 
 Summarize issues by severity. The final line of your response must be exactly one JSON object:
 {"critical":0,"major":0,"minor":0,"blocked":false,"summary":"short summary"}
 ```
 
-### CodeRabbit Remediation Session
+### Deep Review Remediation Session
 
 ```
-You are running agile-loop stage: remediate coderabbit.
+You are running agile-loop stage: remediate deep review.
 
 Repository: {repo}
 Base branch: {base}
@@ -165,7 +171,7 @@ Maximum remediation sub-agents: {max_parallel_remediation}
 
 <<session-isolation>>
 
-Read the CodeRabbit output. Only if it contains Critical or Major issues, spawn scoped sub-agents to fix those issues. Keep each sub-agent's write scope disjoint and tied to one finding or file group. Do not fix Minor issues unless they are necessary for a Critical or Major fix.
+Read the deep-review output. Only if it contains Critical or Major issues, spawn scoped sub-agents to fix those issues. Keep each sub-agent's write scope disjoint and tied to one finding or file group. Do not fix Minor issues unless they are necessary for a Critical or Major fix.
 
 Run targeted validation for the changed files. End with:
 STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
@@ -252,7 +258,7 @@ Both adapters write `.agile-loop/status.json` with this schema. **These field na
   "repo": "<absolute repo path>",
   "base": "<base branch>",
   "status": "starting|running|waiting|blocked|idle|dry_run",
-  "stage": "claim|plan|implement|coderabbit|remediate-coderabbit|gstack-review|qa|remediate-qa|ship|poll-merge|sync-base|complete|dashboard",
+  "stage": "claim|plan|implement|deep-review|remediate-deep-review|gstack-review|qa|remediate-qa|ship|poll-merge|sync-base|complete|dashboard",
   "stage_status": "running|completed|failed|retrying|blocked|waiting|skipped",
   "message": "human-readable summary",
   "task_file": "<absolute path to task file, or empty>",
@@ -272,7 +278,7 @@ Write status atomically — temp file under `.agile-loop/` then `mv`. The canoni
 
 - One PR per queued task.
 - Stop instead of guessing on: `BLOCKED`, `NEEDS_CONTEXT`, failed tests, mandatory user judgment, missing authentication, or closed-unmerged PR state.
-- Delegate CodeRabbit and QA fixes only after findings exist (no preemptive cleanup).
+- Delegate review and QA fixes only after findings exist (no preemptive cleanup).
 - Keep remediation scoped to the finding source. Do not broaden into cleanup.
 - Prefer repo guidance from `AGENTS.md` when present in the target repo.
 - Do not skip the human merge gate. The loop continues only after the PR is merged.

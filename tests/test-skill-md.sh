@@ -104,6 +104,24 @@ if grep -qE 'gpt-5\.[0-9]+' <<< "$BODY"; then
 fi
 pass "SKILL.md does not embed Codex-only model directives"
 
+# CodeRabbit has been replaced by the high-end-model deep-review stage.
+if grep -qiF 'coderabbit' "$SKILL_MD"; then
+  fail "SKILL.md must not reference CodeRabbit anywhere; the review stage is now deep-review"
+fi
+pass "SKILL.md does not reference CodeRabbit"
+
+if grep -qiF 'coderabbit' "$PROMPTS_MD"; then
+  fail "references/prompts.md must not reference CodeRabbit; the review stage is now deep-review"
+fi
+pass "references/prompts.md does not reference CodeRabbit"
+
+# The deep-review stage uses the built-in /code-review skill and inlines its template.
+grep -qF '/code-review' <<< "$BODY" \
+  || fail "SKILL.md must reference the built-in /code-review skill for the deep-review stage"
+grep -qF 'Deep Review Session' <<< "$BODY" \
+  || fail "SKILL.md must inline the Deep Review Session template"
+pass "SKILL.md wires the deep-review stage to /code-review"
+
 # The prompts must be inlined (no relative-path lookup of prompts.md against
 # the target repo at runtime).
 grep -qF 'Prompt templates' <<< "$BODY" \

@@ -39,7 +39,7 @@ Per host:
 - **Claude Code path**: `claude` CLI on `PATH`.
 - **Codex path**: `codex` CLI on `PATH`.
 
-In the target repo: GStack, GSD, Superpowers, and CodeRabbit skills installed.
+In the target repo: GStack, GSD, and Superpowers skills installed. The deep-review stage uses Claude Code's built-in `/code-review` (no extra install).
 
 ## Tasks
 
