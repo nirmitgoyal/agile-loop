@@ -1,6 +1,6 @@
 ---
 name: agile-loop
-description: Run the queued GStack → GSD → Superpowers → CodeRabbit → ship loop end-to-end. Reads tasks from `docs/agile-loop/tasks/*.md`, spawns isolated child sessions per stage, opens one PR per task, and waits for the human to merge before continuing. Use when asked to "run the agile loop", "process the next queued task", or "drive the autonomous engineering loop".
+description: Run the queued GStack → GSD → Superpowers → review → ship loop end-to-end. Reads tasks from `docs/agile-loop/tasks/*.md`, spawns isolated child sessions per stage, opens one PR per task, and waits for the human to merge before continuing. Use when asked to "run the agile loop", "process the next queued task", or "drive the autonomous engineering loop".
 allowed-tools:
   - Bash
   - Read
@@ -47,8 +47,8 @@ claude -p "$(cat .agile-loop/runs/$RUN_ID/<stage>.prompt.md)" \
 Three buckets. Implementation is the only version-pinned stage; every other stage just rides the latest Opus.
 
 - **Implementation → second-best Opus, `--effort max`.** Pin it one rung below the latest release, so the best model is the one reviewing what the second-best model wrote.
-- **Code review (both CodeRabbit passes and GStack `/review`) → latest Opus, `--effort max`.** The best Opus, at full effort, judges the diff.
-- **Every other stage (plan, CodeRabbit/QA remediation, QA, ship) → latest Opus, default effort.** No special routing — just the latest Opus model, at its default effort.
+- **Code review (both deep-review passes and GStack `/review`) → latest Opus, `--effort max`.** The best Opus, at full effort, judges the diff.
+- **Every other stage (plan, deep-review/QA remediation, QA, ship) → latest Opus, default effort.** No special routing — just the latest Opus model, at its default effort.
 
 "Latest Opus" is the `opus` model alias — the newest Opus release, which currently resolves to `claude-opus-4-8`. "Second-best Opus" has no alias, so pin it explicitly; it is currently `claude-opus-4-7`. When a newer Opus ships, the latest-Opus stages follow the `opus` alias automatically — you only bump the second-best pin.
 
@@ -63,14 +63,14 @@ Per-stage routing (`<stage-model>` for each `claude -p` invocation):
 | --- | --- | --- |
 | `plan` | `opus` (latest) | default — omit `--effort` |
 | `implement` | `claude-opus-4-7` (second-best) | `max` |
-| `coderabbit` (pass 1 and 2) | `opus` (latest) | `max` |
-| `remediate-coderabbit` | `opus` (latest) | default — omit `--effort` |
+| `deep-review` (pass 1 and 2) | `opus` (latest) | `max` |
+| `remediate-deep-review` | `opus` (latest) | default — omit `--effort` |
 | `gstack-review` | `opus` (latest) | `max` |
 | `qa` | `opus` (latest) | default — omit `--effort` |
 | `remediate-qa` | `opus` (latest) | default — omit `--effort` |
 | `ship` | `opus` (latest) | default — omit `--effort` |
 
-Only `implement`, `coderabbit`, and `gstack-review` pass `--effort max`; the rest omit `--effort` and run at the model's default effort.
+Only `implement`, `deep-review`, and `gstack-review` pass `--effort max`; the rest omit `--effort` and run at the model's default effort.
 
 The Codex adapter (`scripts/agile-loop.sh`) mirrors the model split: implementation on the second-best model (`--implementation-model`), every other stage on the best/latest model (`--default-model` / `--review-model`).
 
@@ -90,17 +90,17 @@ The steps (identical contract to `scripts/agile-loop.sh`):
 
 1. **Plan** — `Planning Session` template. Convert the task into a Superpowers plan.
 2. **Implement** — `Implementation Session` template. Drive the full Superpowers implementation discipline: `subagent-driven-development` (per-task implement + two-stage review) with `test-driven-development` per task, `systematic-debugging` when stuck, and a `verification-before-completion` gate. Stop before `finishing-a-development-branch` — shipping is step 10.
-3. **CodeRabbit pass 1** — `CodeRabbit Session` template, `{pass}=1`. Parse the final JSON line `{"critical","major","minor","blocked","summary"}`.
-4. **Remediate CodeRabbit** — `CodeRabbit Remediation Session` template. Only spawn if pass 1 has `critical>0 || major>0`. Pass the pass-1 output file path as `{review_output}`.
+3. **Deep review pass 1** — `Deep Review Session` template, `{pass}=1`. Parse the final JSON line `{"critical","major","minor","blocked","summary"}`.
+4. **Remediate deep review** — `Deep Review Remediation Session` template. Only spawn if pass 1 has `critical>0 || major>0`. Pass the pass-1 output file path as `{review_output}`.
 5. **GStack review** — `GStack Review Session` template. Runs `/review`.
 6. **QA** — `QA Session` template. Parse final JSON line `{"issues","blocked","report"}`.
 7. **Remediate QA** — `QA Remediation Session` template. Only if `issues>0`. Pass the QA output path as `{qa_output}`.
-8. **CodeRabbit pass 2** — `CodeRabbit Session` template, `{pass}=2`. Parse the same JSON shape.
-9. **Remediate CodeRabbit pass 2** — only if pass 2 has `critical>0 || major>0`.
+8. **Deep review pass 2** — `Deep Review Session` template, `{pass}=2`. Parse the same JSON shape.
+9. **Remediate deep review pass 2** — only if pass 2 has `critical>0 || major>0`.
 10. **Ship** — `Ship Session` template. Parse the final JSON line `{"blocked","pr_url","summary"}`. Capture `pr_url`.
 11. **Poll for merge** — see **Post-merge handling** below.
 
-Spawn each step's child with the `--model` and effort from **Model and effort routing**: implementation on the second-best Opus at `--effort max`, code review (CodeRabbit and GStack `/review`) on the latest Opus at `--effort max`, and every other stage on the latest Opus at default effort. Update status.json before and after each step. Use `stage` values `plan`, `implement`, `coderabbit`, `remediate-coderabbit`, `gstack-review`, `qa`, `remediate-qa`, `ship`.
+Spawn each step's child with the `--model` and effort from **Model and effort routing**: implementation on the second-best Opus at `--effort max`, code review (deep-review and GStack `/review`) on the latest Opus at `--effort max`, and every other stage on the latest Opus at default effort. Update status.json before and after each step. Use `stage` values `plan`, `implement`, `deep-review`, `remediate-deep-review`, `gstack-review`, `qa`, `remediate-qa`, `ship`.
 
 ### Retry policy per agent-backed step
 
@@ -177,10 +177,10 @@ End with:
 STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 ```
 
-### CodeRabbit Session
+### Deep Review Session
 
 ```
-You are running agile-loop stage: coderabbit review pass {pass}.
+You are running agile-loop stage: deep review pass {pass}.
 
 Repository: {repo}
 Base branch: {base}
@@ -188,16 +188,21 @@ Task file: {task_file}
 
 <<session-isolation>>
 
-Use coderabbit:code-review. Run CodeRabbit against the current branch, passing AGENTS.md as review context when available. Do not apply fixes in this stage.
+Use the built-in /code-review skill at high effort to review the current branch's diff against {base}. Pass AGENTS.md as additional review context when present. This stage is report-only: do not apply fixes.
+
+Classify each finding by severity:
+- critical: correctness/security defects unsafe to merge or that break the feature.
+- major: likely bugs, missing error handling, or significant design problems.
+- minor: style, naming, small cleanups, or non-blocking suggestions.
 
 Summarize issues by severity. The final line of your response must be exactly one JSON object:
 {"critical":0,"major":0,"minor":0,"blocked":false,"summary":"short summary"}
 ```
 
-### CodeRabbit Remediation Session
+### Deep Review Remediation Session
 
 ```
-You are running agile-loop stage: remediate coderabbit.
+You are running agile-loop stage: remediate deep review.
 
 Repository: {repo}
 Base branch: {base}
@@ -207,7 +212,7 @@ Maximum remediation sub-agents: {max_parallel_remediation}
 
 <<session-isolation>>
 
-Read the CodeRabbit output. Only if it contains Critical or Major issues, spawn scoped sub-agents to fix those issues. Keep each sub-agent's write scope disjoint and tied to one finding or file group. Do not fix Minor issues unless they are necessary for a Critical or Major fix.
+Read the deep-review output. Only if it contains Critical or Major issues, spawn scoped sub-agents to fix those issues. Keep each sub-agent's write scope disjoint and tied to one finding or file group. Do not fix Minor issues unless they are necessary for a Critical or Major fix.
 
 Run targeted validation for the changed files. End with:
 STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
@@ -294,7 +299,7 @@ Both adapters write `.agile-loop/status.json` with this schema. **These field na
   "repo": "<absolute repo path>",
   "base": "<base branch>",
   "status": "starting|running|waiting|blocked|idle|dry_run",
-  "stage": "claim|plan|implement|coderabbit|remediate-coderabbit|gstack-review|qa|remediate-qa|ship|poll-merge|sync-base|complete|dashboard",
+  "stage": "claim|plan|implement|deep-review|remediate-deep-review|gstack-review|qa|remediate-qa|ship|poll-merge|sync-base|complete|dashboard",
   "stage_status": "running|completed|failed|retrying|blocked|waiting|skipped",
   "message": "human-readable summary",
   "task_file": "<absolute path to task file, or empty>",
@@ -314,7 +319,7 @@ Write status atomically — temp file under `.agile-loop/` then `mv`. The canoni
 
 - One PR per queued task.
 - Stop instead of guessing on: `BLOCKED`, `NEEDS_CONTEXT`, failed tests, mandatory user judgment, missing authentication, or closed-unmerged PR state.
-- Delegate CodeRabbit and QA fixes only after findings exist (no preemptive cleanup).
+- Delegate review and QA fixes only after findings exist (no preemptive cleanup).
 - Keep remediation scoped to the finding source. Do not broaden into cleanup.
 - Prefer repo guidance from `AGENTS.md` when present in the target repo.
 - Do not skip the human merge gate. The loop continues only after the PR is merged.

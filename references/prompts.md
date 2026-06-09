@@ -2,7 +2,7 @@
 
 Agile Loop uses these prompt shapes for fresh child agent sessions. Both supported adapters template the same shapes: the Codex adapter (`scripts/agile-loop.sh`) sends them through `codex exec --ephemeral`, and the Claude Code adapter (`SKILL.md`) sends them through `claude -p`. Keep final JSON lines intact; adapters use them for branching and retry JSON-contract stages when the final JSON line is missing. Child sessions must reconstruct context from the repository, task file, and explicit output files rather than prior session history.
 
-**Model tiers and effort.** Per stage, **implementation** uses each host's second-best model; **every other stage** uses the best/latest model (shown inline below as `Model tier:`). Effort layers on top: the Claude adapter runs **implementation** and the **code-review** stages (CodeRabbit and GStack `/review`) at `--effort max`, and every other stage at default effort. Resolve tiers to concrete ids per host, shifting them up as newer releases land: Claude uses `claude-opus-4-8` (best/latest, via the `opus` alias) / `claude-opus-4-7` (second-best); the Codex adapter uses `gpt-5.5` / `gpt-5.4`.
+**Model tiers and effort.** Per stage, **implementation** uses each host's second-best model; **every other stage** uses the best/latest model (shown inline below as `Model tier:`). Effort layers on top: the Claude adapter runs **implementation** and the **code-review** stages (deep-review and GStack `/review`) at `--effort max`, and every other stage at default effort. Resolve tiers to concrete ids per host, shifting them up as newer releases land: Claude uses `claude-opus-4-8` (best/latest, via the `opus` alias) / `claude-opus-4-7` (second-best); the Codex adapter uses `gpt-5.5` / `gpt-5.4`.
 
 ## Planning Session
 
@@ -55,12 +55,14 @@ End with:
 STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 ```
 
-## CodeRabbit Session
+## Deep Review Session
 
 Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
+Each host runs the review with its strongest code-review capability: the Claude Code adapter uses the built-in `/code-review` at high effort; the Codex adapter performs an equivalent rigorous senior-level review. The prompt body below stays host-neutral.
+
 ```
-You are running agile-loop stage: coderabbit review pass {pass}.
+You are running agile-loop stage: deep review pass {pass}.
 
 Repository: {repo}
 Base branch: {base}
@@ -69,18 +71,23 @@ Task file: {task_file}
 Session isolation:
 This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
-Use coderabbit:code-review. Run CodeRabbit against the current branch, passing AGENTS.md as review context when available. Do not apply fixes in this stage.
+Perform a rigorous code review of the current branch's diff against {base}, covering correctness, security, edge cases, error handling, and simplification/efficiency. Pass AGENTS.md as additional context when present. This stage is report-only: do not apply fixes.
+
+Classify each finding by severity:
+- critical: correctness/security defects unsafe to merge or that break the feature.
+- major: likely bugs, missing error handling, or significant design problems.
+- minor: style, naming, small cleanups, or non-blocking suggestions.
 
 Summarize issues by severity. The final line of your response must be exactly one JSON object:
 {"critical":0,"major":0,"minor":0,"blocked":false,"summary":"short summary"}
 ```
 
-## CodeRabbit Remediation Session
+## Deep Review Remediation Session
 
 Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
-You are running agile-loop stage: remediate coderabbit.
+You are running agile-loop stage: remediate deep review.
 
 Repository: {repo}
 Base branch: {base}
@@ -91,7 +98,7 @@ Maximum remediation sub-agents: {max_parallel_remediation}
 Session isolation:
 This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
-Read the CodeRabbit output. Only if it contains Critical or Major issues, spawn scoped sub-agents to fix those issues. Keep each sub-agent's write scope disjoint and tied to one finding or file group. Do not fix Minor issues unless they are necessary for a Critical or Major fix.
+Read the deep-review output. Only if it contains Critical or Major issues, spawn scoped sub-agents to fix those issues. Keep each sub-agent's write scope disjoint and tied to one finding or file group. Do not fix Minor issues unless they are necessary for a Critical or Major fix.
 
 Run targeted validation for the changed files. End with:
 STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
