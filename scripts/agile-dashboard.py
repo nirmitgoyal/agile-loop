@@ -574,8 +574,10 @@ def make_handler(repo: Path, status_path: Path, queue_glob: str) -> type[BaseHTT
                 try:
                     self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                     self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError):
-                    return
+                except (OSError, ValueError):
+                    # Client disconnected (OSError covers BrokenPipeError/
+                    # ConnectionResetError; ValueError if the stream is closed).
+                    break
                 time.sleep(POLL_INTERVAL_MS / 1000)
 
         def send_payload(self, content_type: str, payload: bytes) -> None:
