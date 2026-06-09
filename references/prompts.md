@@ -2,9 +2,11 @@
 
 Agile Loop uses these prompt shapes for fresh child agent sessions. Both supported adapters template the same shapes: the Codex adapter (`scripts/agile-loop.sh`) sends them through `codex exec --ephemeral`, and the Claude Code adapter (`SKILL.md`) sends them through `claude -p`. Keep final JSON lines intact; adapters use them for branching and retry JSON-contract stages when the final JSON line is missing. Child sessions must reconstruct context from the repository, task file, and explicit output files rather than prior session history.
 
+**Model tiers and effort.** Per stage, **implementation** uses each host's second-best model; **every other stage** uses the best/latest model (shown inline below as `Model tier:`). Effort layers on top: the Claude adapter runs **implementation** and the **code-review** stages (CodeRabbit and GStack `/review`) at `--effort max`, and every other stage at default effort. Resolve tiers to concrete ids per host, shifting them up as newer releases land: Claude uses `claude-opus-4-8` (best/latest, via the `opus` alias) / `claude-opus-4-7` (second-best); the Codex adapter uses `gpt-5.5` / `gpt-5.4`.
+
 ## Planning Session
 
-Use model `gpt-5.5`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
 You are running agile-loop stage: plan.
@@ -25,7 +27,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## Implementation Session
 
-Use model `gpt-5.4`.
+Model tier: **second-best** — Claude `claude-opus-4-7`, Codex `gpt-5.4`.
 
 ```
 You are running agile-loop stage: implement.
@@ -46,7 +48,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## CodeRabbit Session
 
-Use model `gpt-5.5`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
 You are running agile-loop stage: coderabbit review pass {pass}.
@@ -66,7 +68,7 @@ Summarize issues by severity. The final line of your response must be exactly on
 
 ## CodeRabbit Remediation Session
 
-Use model `gpt-5.5`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
 You are running agile-loop stage: remediate coderabbit.
@@ -88,7 +90,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## GStack Review Session
 
-Use model `gpt-5.5`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
 You are running agile-loop stage: gstack review.
@@ -107,7 +109,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## QA Session
 
-Use model `gpt-5.5`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
 You are running agile-loop stage: qa-only full.
@@ -127,7 +129,7 @@ The final line of your response must be exactly one JSON object:
 
 ## QA Remediation Session
 
-Use model `gpt-5.5`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
 You are running agile-loop stage: remediate qa.
@@ -149,7 +151,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## Ship Session
 
-Use model `gpt-5.5`.
+Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
 
 ```
 You are running agile-loop stage: ship.

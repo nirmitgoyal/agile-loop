@@ -31,6 +31,7 @@ For every agent-backed step, spawn one fresh child via `Bash`:
 
 ```bash
 claude -p "$(cat .agile-loop/runs/$RUN_ID/<stage>.prompt.md)" \
+  --model <stage-model> \
   --output-format text \
   --dangerously-skip-permissions \
   > .agile-loop/runs/$RUN_ID/<stage>.output.md \
@@ -38,8 +39,40 @@ claude -p "$(cat .agile-loop/runs/$RUN_ID/<stage>.prompt.md)" \
 ```
 
 - `--dangerously-skip-permissions` is required so the child can write files and run shell commands without prompting. Only pass it when the parent loop is gated by `--unsafe-bypass-approvals` / `AGILE_LOOP_UNSAFE_BYPASS=1`. In `--dry-run` mode, do not spawn the child at all — log "DRY RUN: would run stage=<stage>".
-- The child inherits the parent's Claude model by default. If a user wants stage-specific routing, they can set `ANTHROPIC_MODEL` in the environment or add `--model <id>` to the invocation; this skill does not hard-code model identifiers (the GPT model directives in the Codex adapter's prompts are Codex-specific and intentionally omitted here).
+- `--model <stage-model>` is mandatory on **every** stage — never let a stage silently inherit an ambient default model. The implementation and code-review stages additionally pass `--effort max`; every other stage runs at default effort (omit `--effort`). Resolve both from the stage's row in **Model and effort routing** below and pass them explicitly on each `claude -p` call.
 - Build each prompt file first using the inline templates in **Prompt templates**.
+
+## Model and effort routing
+
+Three buckets. Implementation is the only version-pinned stage; every other stage just rides the latest Opus.
+
+- **Implementation → second-best Opus, `--effort max`.** Pin it one rung below the latest release, so the best model is the one reviewing what the second-best model wrote.
+- **Code review (both CodeRabbit passes and GStack `/review`) → latest Opus, `--effort max`.** The best Opus, at full effort, judges the diff.
+- **Every other stage (plan, CodeRabbit/QA remediation, QA, ship) → latest Opus, default effort.** No special routing — just the latest Opus model, at its default effort.
+
+"Latest Opus" is the `opus` model alias — the newest Opus release, which currently resolves to `claude-opus-4-8`. "Second-best Opus" has no alias, so pin it explicitly; it is currently `claude-opus-4-7`. When a newer Opus ships, the latest-Opus stages follow the `opus` alias automatically — you only bump the second-best pin.
+
+| Tier | How to pass it |
+| --- | --- |
+| Latest / best Opus | `--model opus` (currently `claude-opus-4-8`) |
+| Second-best Opus | `--model claude-opus-4-7` (bump on each new Opus release) |
+
+Per-stage routing (`<stage-model>` for each `claude -p` invocation):
+
+| Stage (`stage` value) | `--model` | `--effort` |
+| --- | --- | --- |
+| `plan` | `opus` (latest) | default — omit `--effort` |
+| `implement` | `claude-opus-4-7` (second-best) | `max` |
+| `coderabbit` (pass 1 and 2) | `opus` (latest) | `max` |
+| `remediate-coderabbit` | `opus` (latest) | default — omit `--effort` |
+| `gstack-review` | `opus` (latest) | `max` |
+| `qa` | `opus` (latest) | default — omit `--effort` |
+| `remediate-qa` | `opus` (latest) | default — omit `--effort` |
+| `ship` | `opus` (latest) | default — omit `--effort` |
+
+Only `implement`, `coderabbit`, and `gstack-review` pass `--effort max`; the rest omit `--effort` and run at the model's default effort.
+
+The Codex adapter (`scripts/agile-loop.sh`) mirrors the model split: implementation on the second-best model (`--implementation-model`), every other stage on the best/latest model (`--default-model` / `--review-model`).
 
 ## Per-iteration loop
 
@@ -67,7 +100,7 @@ The steps (identical contract to `scripts/agile-loop.sh`):
 10. **Ship** — `Ship Session` template. Parse the final JSON line `{"blocked","pr_url","summary"}`. Capture `pr_url`.
 11. **Poll for merge** — see **Post-merge handling** below.
 
-Update status.json before and after each step. Use `stage` values `plan`, `implement`, `coderabbit`, `remediate-coderabbit`, `gstack-review`, `qa`, `remediate-qa`, `ship`.
+Spawn each step's child with the `--model` and effort from **Model and effort routing**: implementation on the second-best Opus at `--effort max`, code review (CodeRabbit and GStack `/review`) on the latest Opus at `--effort max`, and every other stage on the latest Opus at default effort. Update status.json before and after each step. Use `stage` values `plan`, `implement`, `coderabbit`, `remediate-coderabbit`, `gstack-review`, `qa`, `remediate-qa`, `ship`.
 
 ### Retry policy per agent-backed step
 
