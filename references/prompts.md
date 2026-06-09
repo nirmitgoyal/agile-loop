@@ -48,6 +48,8 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 Review tier — Codex: `gpt-5.5`, Claude: `claude-opus-4-8`.
 
+Each host runs the review with its strongest code-review capability: the Claude Code adapter uses the built-in `/code-review` at high effort; the Codex adapter performs an equivalent rigorous senior-level review. The prompt body below stays host-neutral.
+
 ```
 You are running agile-loop stage: deep review pass {pass}.
 
@@ -58,7 +60,7 @@ Task file: {task_file}
 Session isolation:
 This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
 
-Review the current branch's diff against {base} with the host's strongest code-review capability (Claude Code: the built-in /code-review at high effort; Codex: an equivalent rigorous senior-level review covering correctness, security, edge cases, error handling, and simplification/efficiency). Pass AGENTS.md as additional context when present. This stage is report-only: do not apply fixes.
+Perform a rigorous code review of the current branch's diff against {base}, covering correctness, security, edge cases, error handling, and simplification/efficiency. Pass AGENTS.md as additional context when present. This stage is report-only: do not apply fixes.
 
 Classify each finding by severity:
 - critical: correctness/security defects unsafe to merge or that break the feature.
