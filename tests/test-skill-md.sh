@@ -135,5 +135,35 @@ grep -qE '^interface:' "$CLAUDE_YAML" || fail "agents/claude.yaml is missing 'in
 grep -qE '^interface:' "$OPENAI_YAML" || fail "agents/openai.yaml is missing 'interface:' block"
 pass "both host metadata files have an 'interface:' block"
 
+# Full Superpowers implementation discipline — the implement stage must drive the
+# installed plugin's COMPLETE workflow (not just subagent-driven-development) and
+# must stop before the ship boundary. Enforced across all three adapter surfaces
+# so the "all adapters in sync" contract cannot silently regress.
+SP_WORKFLOW_NEEDLES=(
+  'superpowers:subagent-driven-development'
+  'superpowers:test-driven-development'
+  'superpowers:systematic-debugging'
+  'superpowers:verification-before-completion'
+  # Must appear as a prohibition in the implement prompt, not an invocation:
+  'do NOT run superpowers:finishing-a-development-branch'
+)
+for needle in "${SP_WORKFLOW_NEEDLES[@]}"; do
+  grep -qF "$needle" <<< "$BODY" \
+    || fail "SKILL.md implement template must reference '$needle' (full Superpowers workflow)"
+done
+pass "SKILL.md implement template drives the full Superpowers workflow"
+
+for needle in "${SP_WORKFLOW_NEEDLES[@]}"; do
+  grep -qF "$needle" "$PROMPTS_MD" \
+    || fail "references/prompts.md implement prompt must reference '$needle' (full Superpowers workflow)"
+done
+pass "references/prompts.md implement prompt drives the full Superpowers workflow"
+
+for needle in "${SP_WORKFLOW_NEEDLES[@]}"; do
+  grep -qF "$needle" "$RUNNER_SH" \
+    || fail "scripts/agile-loop.sh implement prompt must reference '$needle' (full Superpowers workflow)"
+done
+pass "scripts/agile-loop.sh implement prompt drives the full Superpowers workflow"
+
 echo ""
 echo "OK: SKILL.md and adapter contract invariants hold."

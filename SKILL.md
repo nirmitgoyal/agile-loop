@@ -56,7 +56,7 @@ For up to `--max-iterations` iterations, or until the queue is empty:
 The steps (identical contract to `scripts/agile-loop.sh`):
 
 1. **Plan** — `Planning Session` template. Convert the task into a Superpowers plan.
-2. **Implement** — `Implementation Session` template. Run `superpowers:subagent-driven-development`.
+2. **Implement** — `Implementation Session` template. Drive the full Superpowers implementation discipline: `subagent-driven-development` (per-task implement + two-stage review) with `test-driven-development` per task, `systematic-debugging` when stuck, and a `verification-before-completion` gate. Stop before `finishing-a-development-branch` — shipping is step 10.
 3. **CodeRabbit pass 1** — `CodeRabbit Session` template, `{pass}=1`. Parse the final JSON line `{"critical","major","minor","blocked","summary"}`.
 4. **Remediate CodeRabbit** — `CodeRabbit Remediation Session` template. Only spawn if pass 1 has `critical>0 || major>0`. Pass the pass-1 output file path as `{review_output}`.
 5. **GStack review** — `GStack Review Session` template. Runs `/review`.
@@ -128,7 +128,16 @@ Task file: {task_file}
 
 <<session-isolation>>
 
-Use superpowers:subagent-driven-development to execute the current Superpowers plan task-by-task. Keep changes scoped to the plan. Run the plan's verification commands. Do not ship or create a PR.
+Drive this stage through the installed Superpowers plugin's full implementation discipline. Invoke each as a Skill (engage the installed plugin — do not merely imitate the workflow):
+
+1. superpowers:subagent-driven-development — execute the current Superpowers plan task-by-task: a fresh implementer subagent per task, then the two-stage spec-compliance then code-quality review it prescribes, and a final whole-implementation review at the end.
+2. superpowers:test-driven-development — implementer subagents write a failing test and watch it fail before any production code (RED → GREEN → REFACTOR). No production code without a failing test first.
+3. superpowers:systematic-debugging — when a test fails or behavior is unexpected, root-cause it with this skill instead of guessing.
+4. superpowers:verification-before-completion — before reporting DONE, run the plan's verification commands fresh and confirm the output. Evidence before claims.
+
+Keep all changes scoped to the plan. Per-task commits on the working branch are expected.
+
+Do not cross the ship boundary: do NOT run superpowers:finishing-a-development-branch, do NOT open a PR, and do NOT merge or push to the base branch. Review, QA, and ship are later agile-loop stages — leave the work committed on the branch and stop.
 
 Stop with BLOCKED if tests fail and cannot be fixed inside the task scope, if mandatory user judgment is needed, or if the plan is missing.
 End with:
