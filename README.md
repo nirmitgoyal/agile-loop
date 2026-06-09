@@ -1,5 +1,7 @@
 # Agile Loop
 
+![Agile Loop workflow](docs/agile-loop-diagram.png)
+
 Agile Loop runs a queued engineering loop for agent-assisted repos:
 GStack spec -> GSD phase -> Superpowers plan -> implementation -> review/QA ->
 ship -> human merge.
@@ -123,6 +125,8 @@ The dashboard works for both adapters:
 works.)
 
 It serves `http://127.0.0.1:8765` and reads `.agile-loop/status.json`.
+
+![Agile Loop live dashboard](docs/agile-loop-dashboard.png)
 
 ## Tests
 
