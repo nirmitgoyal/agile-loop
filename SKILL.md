@@ -1,6 +1,6 @@
 ---
 name: agile-loop
-description: Run the queued GStack → GSD → Superpowers → review → ship loop end-to-end. Reads tasks from `docs/agile-loop/tasks/*.md`, spawns isolated child sessions per stage, opens one PR per task, and auto-merges it (squash) before continuing to the next task. Use when asked to "run the agile loop", "process the next queued task", or "drive the autonomous engineering loop".
+description: Run the queued GSD → Superpowers → review → ship loop end-to-end. Reads tasks from `docs/agile-loop/tasks/*.md`, spawns isolated child sessions per stage, opens one PR per task, and auto-merges it (squash) before continuing to the next task. Use when asked to "run the agile loop", "process the next queued task", or "drive the autonomous engineering loop".
 allowed-tools:
   - Bash
   - Read
@@ -47,7 +47,7 @@ claude -p "$(cat .agile-loop/runs/$RUN_ID/<stage>.prompt.md)" \
 Three buckets. Implementation is the only version-pinned stage; every other stage just rides the latest Opus.
 
 - **Implementation → second-best Opus, `--effort max`.** Pin it one rung below the latest release, so the best model is the one reviewing what the second-best model wrote.
-- **Code review (both deep-review passes and GStack `/review`) → latest Opus, `--effort max`.** The best Opus, at full effort, judges the diff.
+- **Code review (both deep-review passes) → latest Opus, `--effort max`.** The best Opus, at full effort, judges the diff.
 - **Every other stage (plan, deep-review/QA remediation, QA, ship) → latest Opus, default effort.** No special routing — just the latest Opus model, at its default effort.
 
 "Latest Opus" is the `opus` model alias — the newest Opus release, which currently resolves to `claude-opus-4-8`. "Second-best Opus" has no alias, so pin it explicitly; it is currently `claude-opus-4-7`. When a newer Opus ships, the latest-Opus stages follow the `opus` alias automatically — you only bump the second-best pin.
@@ -65,12 +65,11 @@ Per-stage routing (`<stage-model>` for each `claude -p` invocation):
 | `implement` | `claude-opus-4-7` (second-best) | `max` |
 | `deep-review` (pass 1 and 2) | `opus` (latest) | `max` |
 | `remediate-deep-review` | `opus` (latest) | default — omit `--effort` |
-| `gstack-review` | `opus` (latest) | `max` |
 | `qa` | `opus` (latest) | default — omit `--effort` |
 | `remediate-qa` | `opus` (latest) | default — omit `--effort` |
 | `ship` | `opus` (latest) | default — omit `--effort` |
 
-Only `implement`, `deep-review`, and `gstack-review` pass `--effort max`; the rest omit `--effort` and run at the model's default effort.
+Only `implement` and `deep-review` pass `--effort max`; the rest omit `--effort` and run at the model's default effort.
 
 The Codex adapter (`scripts/agile-loop.sh`) mirrors the model split: implementation on the second-best model (`--implementation-model`), every other stage on the best/latest model (`--default-model` / `--review-model`).
 
@@ -84,23 +83,22 @@ For up to `--max-iterations` iterations, or until the queue is empty:
 - Read each file's YAML frontmatter. Pick the first with `status: todo`. If none, write `status: idle` and stop with a one-line summary.
 - Edit the chosen task file's frontmatter to `status: doing`. Write status.json with `stage: claim`, `stage_status: running`, the task path in `task_file`, and the current iteration number. In `--dry-run`, do not mutate the task file; just log "would claim <task>".
 
-### 2. Run the 11-step loop contract
+### 2. Run the 10-step loop contract
 
 The steps (identical contract to `scripts/agile-loop.sh`):
 
 1. **Plan** — `Planning Session` template. Convert the task into a Superpowers plan.
-2. **Implement** — `Implementation Session` template. Drive the full Superpowers implementation discipline: `subagent-driven-development` (per-task implement + two-stage review) with `test-driven-development` per task, `systematic-debugging` when stuck, and a `verification-before-completion` gate. Stop before `finishing-a-development-branch` — shipping is step 10.
+2. **Implement** — `Implementation Session` template. Drive the full Superpowers implementation discipline: `subagent-driven-development` (per-task implement + two-stage review) with `test-driven-development` per task, `systematic-debugging` when stuck, and a `verification-before-completion` gate. Stop before `finishing-a-development-branch` — shipping is step 9.
 3. **Deep review pass 1** — `Deep Review Session` template, `{pass}=1`. Parse the final JSON line `{"critical","major","minor","blocked","summary"}`.
 4. **Remediate deep review** — `Deep Review Remediation Session` template. Only spawn if pass 1 has `critical>0 || major>0`. Pass the pass-1 output file path as `{review_output}`.
-5. **GStack review** — `GStack Review Session` template. Runs `/review`.
-6. **QA** — `QA Session` template. Parse final JSON line `{"issues","blocked","report"}`.
-7. **Remediate QA** — `QA Remediation Session` template. Only if `issues>0`. Pass the QA output path as `{qa_output}`.
-8. **Deep review pass 2** — `Deep Review Session` template, `{pass}=2`. Parse the same JSON shape.
-9. **Remediate deep review pass 2** — only if pass 2 has `critical>0 || major>0`.
-10. **Ship** — `Ship Session` template. Parse the final JSON line `{"blocked","pr_url","summary"}`. Capture `pr_url`.
-11. **Auto-merge** — the loop merges the PR itself; see **Auto-merge handling** below. Do not wait for a human.
+5. **QA** — `QA Session` template. Parse final JSON line `{"issues","blocked","report"}`.
+6. **Remediate QA** — `QA Remediation Session` template. Only if `issues>0`. Pass the QA output path as `{qa_output}`.
+7. **Deep review pass 2** — `Deep Review Session` template, `{pass}=2`. Parse the same JSON shape.
+8. **Remediate deep review pass 2** — only if pass 2 has `critical>0 || major>0`.
+9. **Ship** — `Ship Session` template. Parse the final JSON line `{"blocked","pr_url","summary"}`. Capture `pr_url`.
+10. **Auto-merge** — the loop merges the PR itself; see **Auto-merge handling** below. Do not wait for a human.
 
-Spawn each step's child with the `--model` and effort from **Model and effort routing**: implementation on the second-best Opus at `--effort max`, code review (deep-review and GStack `/review`) on the latest Opus at `--effort max`, and every other stage on the latest Opus at default effort. Update status.json before and after each step. Use `stage` values `plan`, `implement`, `deep-review`, `remediate-deep-review`, `gstack-review`, `qa`, `remediate-qa`, `ship`.
+Spawn each step's child with the `--model` and effort from **Model and effort routing**: implementation on the second-best Opus at `--effort max`, deep-review on the latest Opus at `--effort max`, and every other stage on the latest Opus at default effort. Update status.json before and after each step. Use `stage` values `plan`, `implement`, `deep-review`, `remediate-deep-review`, `qa`, `remediate-qa`, `ship`.
 
 ### Retry policy per agent-backed step
 
@@ -110,7 +108,7 @@ Spawn each step's child with the `--model` and effort from **Model and effort ro
 
 ### 3. Auto-merge handling
 
-After step 10 writes `pr_url`, the loop merges the PR itself — there is no human merge gate and no polling:
+After step 9 writes `pr_url`, the loop merges the PR itself — there is no human merge gate and no polling:
 
 1. Write `status: running`, `stage: merge`. Squash-merge the PR with admin override and branch cleanup: `gh pr merge <pr_url> --squash --admin --delete-branch`. `--admin` forces past branch protection / required checks so the loop never blocks waiting on a reviewer or CI gate. Retry the merge on transient failure with the same budget as every other step (3 attempts, exponential backoff 5s, 10s, 20s — see **Retry policy per agent-backed step**). If `gh pr merge` exits non-zero, do not block immediately: re-check the PR's real state with `gh pr view <pr_url> --json state`. If `state` is `MERGED`, treat it as success and continue — this is common when the repo auto-deletes head branches, so `--delete-branch` errors on an already-gone branch; only log a warning that the branch cleanup failed. Set `status: blocked` (reason e.g. "failed to squash-merge PR <pr_url>") and stop ONLY if the PR is genuinely not `MERGED` after retries are exhausted. In `--dry-run`, do not merge; log "DRY RUN: would run gh pr merge <pr_url> --squash --admin --delete-branch".
 2. Sync the base branch. Write `stage: sync-base`, then:
@@ -217,22 +215,6 @@ Run targeted validation for the changed files. End with:
 STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 ```
 
-### GStack Review Session
-
-```
-You are running agile-loop stage: gstack review.
-
-Repository: {repo}
-Base branch: {base}
-Task file: {task_file}
-
-<<session-isolation>>
-
-Use /review. Apply auto-fixes and handle the workflow exactly as the skill requires. Stop with BLOCKED if /review needs mandatory human judgment.
-End with:
-STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
-```
-
 ### QA Session
 
 ```
@@ -298,7 +280,7 @@ Both adapters write `.agile-loop/status.json` with this schema. **These field na
   "repo": "<absolute repo path>",
   "base": "<base branch>",
   "status": "starting|running|waiting|blocked|idle|dry_run",
-  "stage": "claim|plan|implement|deep-review|remediate-deep-review|gstack-review|qa|remediate-qa|ship|merge|sync-base|complete|dashboard",
+  "stage": "claim|plan|implement|deep-review|remediate-deep-review|qa|remediate-qa|ship|merge|sync-base|complete|dashboard",
   "stage_status": "running|completed|failed|retrying|blocked|waiting|skipped",
   "message": "human-readable summary",
   "task_file": "<absolute path to task file, or empty>",

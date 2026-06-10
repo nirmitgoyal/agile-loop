@@ -801,23 +801,6 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 EOF
 }
 
-build_review_prompt() {
-  local task="$1"
-  cat <<EOF
-You are running agile-loop stage: gstack review.
-
-Repository: $REPO
-Base branch: $BASE
-Task file: $task
-
-$(stage_session_contract)
-
-Use /review. Apply auto-fixes and handle the workflow exactly as the skill requires. Stop with BLOCKED if /review needs mandatory human judgment.
-End with:
-STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
-EOF
-}
-
 build_qa_prompt() {
   local task="$1"
   cat <<EOF
@@ -960,7 +943,7 @@ run_iteration() {
   write_status "running" "claim" "running" "claiming task: $(task_title "$task")" "$task" "$iteration"
   if [ "$DRY_RUN" = "1" ]; then
     echo "DRY RUN: next task $task"
-    echo "DRY RUN: would run plan -> implement -> deep-review -> conditional remediation -> review -> qa -> conditional investigate -> deep-review -> conditional remediation -> ship -> merge -> sync base"
+    echo "DRY RUN: would run plan -> implement -> deep-review -> conditional remediation -> qa -> conditional investigate -> deep-review -> conditional remediation -> ship -> merge -> sync base"
     write_status "dry_run" "dry-run" "completed" "dry-run printed planned sessions for $(task_title "$task")" "$task" "$iteration"
     return 0
   fi
@@ -982,34 +965,32 @@ run_iteration() {
     write_status "running" "04-remediate-deep-review-pass-1" "skipped" "Deep review pass 1 has no Critical/Major issues; skipping remediation" "$task" "$iteration"
   fi
 
-  run_status_stage "$task" "$iter_dir" "05-gstack-review" "$REVIEW_MODEL" "$(build_review_prompt "$task")"
-
   local qa qa_issues
-  qa="$(run_json_stage "$task" "$iter_dir" "06-qa-only-full" "$REVIEW_MODEL" "$(build_qa_prompt "$task")")"
+  qa="$(run_json_stage "$task" "$iter_dir" "05-qa-only-full" "$REVIEW_MODEL" "$(build_qa_prompt "$task")")"
   qa_issues="$(json_int_from_last_line "$qa" issues)"
   if [ "$qa_issues" -gt 0 ]; then
-    run_status_stage "$task" "$iter_dir" "07-remediate-qa" "$REVIEW_MODEL" "$(build_qa_remediation_prompt "$task" "$qa")"
+    run_status_stage "$task" "$iter_dir" "06-remediate-qa" "$REVIEW_MODEL" "$(build_qa_remediation_prompt "$task" "$qa")"
   else
     log "QA reported 0 issues; skipping investigate remediation"
-    write_status "running" "07-remediate-qa" "skipped" "QA reported 0 issues; skipping investigate remediation" "$task" "$iteration"
+    write_status "running" "06-remediate-qa" "skipped" "QA reported 0 issues; skipping investigate remediation" "$task" "$iteration"
   fi
 
   local dr2 dr2_critical dr2_major
-  dr2="$(run_json_stage "$task" "$iter_dir" "08-deep-review-pass-2" "$REVIEW_MODEL" "$(build_deep_review_prompt "$task" "2")")"
+  dr2="$(run_json_stage "$task" "$iter_dir" "07-deep-review-pass-2" "$REVIEW_MODEL" "$(build_deep_review_prompt "$task" "2")")"
   dr2_critical="$(json_int_from_last_line "$dr2" critical)"
   dr2_major="$(json_int_from_last_line "$dr2" major)"
   if [ $((dr2_critical + dr2_major)) -gt 0 ]; then
-    run_status_stage "$task" "$iter_dir" "09-remediate-deep-review-pass-2" "$REVIEW_MODEL" "$(build_deep_review_remediation_prompt "$task" "$dr2")"
+    run_status_stage "$task" "$iter_dir" "08-remediate-deep-review-pass-2" "$REVIEW_MODEL" "$(build_deep_review_remediation_prompt "$task" "$dr2")"
   else
     log "Deep review pass 2 has no Critical/Major issues; skipping remediation"
-    write_status "running" "09-remediate-deep-review-pass-2" "skipped" "Deep review pass 2 has no Critical/Major issues; skipping remediation" "$task" "$iteration"
+    write_status "running" "08-remediate-deep-review-pass-2" "skipped" "Deep review pass 2 has no Critical/Major issues; skipping remediation" "$task" "$iteration"
   fi
 
   local ship pr_url
-  ship="$(run_json_stage "$task" "$iter_dir" "10-ship" "$REVIEW_MODEL" "$(build_ship_prompt "$task")")"
+  ship="$(run_json_stage "$task" "$iter_dir" "09-ship" "$REVIEW_MODEL" "$(build_ship_prompt "$task")")"
   pr_url="$(json_string_from_last_line "$ship" pr_url)"
   if [ -z "$pr_url" ]; then
-    CURRENT_STAGE="10-ship"
+    CURRENT_STAGE="09-ship"
     mark_blocked_and_stop "$task" "ship stage returned no pr_url"
   fi
   merge_pr "$task" "$pr_url"
