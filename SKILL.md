@@ -7,7 +7,7 @@ allowed-tools:
   - Write
   - Edit
   - Glob
-argument-hint: "[--repo PATH] [--base BRANCH] [--max-iterations N] [--unsafe-bypass-approvals] [--dry-run]"
+argument-hint: "[--repo PATH] [--base BRANCH] [--max-iterations N] [--unsafe-bypass-approvals] [--dry-run] [--dashboard-host HOST] [--dashboard-port N] [--no-dashboard]"
 ---
 
 # Agile Loop — Claude Code adapter
@@ -18,12 +18,13 @@ When you spawn a child via `claude -p "<prompt>"`, that is the Claude-side equiv
 
 ## Pre-flight
 
-1. Parse args (all optional): `--repo PATH` (default `$PWD`), `--base BRANCH` (default `main`), `--max-iterations N` (default 10), `--unsafe-bypass-approvals` (boolean), `--dry-run` (boolean). `cd` into the resolved repo root.
+1. Parse args (all optional): `--repo PATH` (default `$PWD`), `--base BRANCH` (default `main`), `--max-iterations N` (default 10), `--unsafe-bypass-approvals` (boolean), `--dry-run` (boolean), `--dashboard-host HOST` (default `127.0.0.1`, env `AGILE_LOOP_DASHBOARD_HOST`), `--dashboard-port N` (default `8765`, env `AGILE_LOOP_DASHBOARD_PORT`), `--no-dashboard` (boolean, env `AGILE_LOOP_NO_DASHBOARD=1`). `cd` into the resolved repo root.
 2. Resolve approval bypass: live runs require either `--unsafe-bypass-approvals` or `AGILE_LOOP_UNSAFE_BYPASS=1` in the environment. If neither is set and `--dry-run` is also not set, stop with a clear blocked message — the Codex adapter has the same gate (`scripts/agile-loop.sh`).
 3. Confirm `git`, `gh`, `claude`, and `python3` are on `PATH`. If any are missing, write a blocked status with a clear message and stop.
 4. Create `.agile-loop/` and `.agile-loop/runs/<RUN_ID>/` if missing. Generate a `RUN_ID` (UTC timestamp + short random).
 5. Initialize `.agile-loop/status.json` with `status: starting` via the status writer (see **Status writer** below).
-6. Print a one-line summary to the user: `Agile Loop: repo=<repo> base=<base> max=<n> dry_run=<bool> run=<RUN_ID>`.
+6. **Auto-start the dashboard** so `http://<dashboard-host>:<dashboard-port>` (default `http://127.0.0.1:8765`) always reflects the active loop. See **Dashboard auto-start** below for the exact behavior. Skip this step entirely when `--no-dashboard` / `AGILE_LOOP_NO_DASHBOARD=1` is set.
+7. Print a one-line summary to the user: `Agile Loop: repo=<repo> base=<base> max=<n> dry_run=<bool> run=<RUN_ID> dashboard=<url|skipped>`.
 
 ## Child-session invocation
 
@@ -314,6 +315,38 @@ Both adapters write `.agile-loop/status.json` with this schema. **These field na
 
 Write status atomically — temp file under `.agile-loop/` then `mv`. The canonical implementation is `write_status()` in `scripts/agile-loop.sh`; mirror its field names and behavior exactly. A small `python3 -c` heredoc invoked via `Bash` is sufficient — pass each value as an argv arg and let Python build the dict.
 
+## Dashboard auto-start
+
+The dashboard (`scripts/agile-dashboard.py`) is part of the agile-loop user contract: every time the skill is used, `http://<dashboard-host>:<dashboard-port>` (default `http://127.0.0.1:8765`) MUST be serving the current `--repo`. Do not assume the user has it running — start or reclaim it during pre-flight.
+
+Algorithm — run via `Bash` once, after the initial `status: starting` write and before the per-iteration loop:
+
+1. If `--no-dashboard` (or `AGILE_LOOP_NO_DASHBOARD=1`) is set: log "dashboard auto-start disabled" and skip. The user is on the hook for running their own.
+2. Probe the URL: `curl -fsS --max-time 2 http://<host>:<port>/api/status`. Parse the JSON `repo` field.
+   - If it equals the current `--repo` (resolved absolute path): log "dashboard already serving <repo>" and skip — idempotent reuse, do not respawn.
+   - If it returns a *different* repo: a stale dashboard from a prior run is squatting on the port. Reclaim it: find the listener with `lsof -ti tcp:<port> -sTCP:LISTEN`, `kill` then `kill -9` after a 1s grace, then proceed to step 3. Log the reclamation so the user knows.
+   - If the probe fails (connection refused / timeout): proceed to step 3.
+3. Spawn the dashboard detached so it outlives the loop run:
+
+   ```bash
+   nohup python3 scripts/agile-dashboard.py \
+     --repo "$REPO" \
+     --status-file .agile-loop/status.json \
+     --queue-glob 'docs/agile-loop/tasks/*.md' \
+     --host "$DASHBOARD_HOST" \
+     --port "$DASHBOARD_PORT" \
+     > .agile-loop/runs/$RUN_ID/dashboard.log 2>&1 &
+   echo "$!" > .agile-loop/dashboard.pid
+   disown 2>/dev/null || true
+   ```
+
+   Use `nohup` (or a detached subshell + `disown`) so the dashboard process is NOT a child of the current Bash invocation — when the loop completes, the dashboard keeps running so the user can still see the final state.
+4. Wait ~1s, then re-probe `/api/status` once to confirm the spawn succeeded. If still unreachable, write a non-blocking warning to the log (`dashboard did not respond at <url> within 1s; check <log>`) and continue — a missing dashboard is annoying but not blocking.
+
+Never edit `scripts/agile-dashboard.py` to "show" tasks differently — it reads disk on every poll. Keeping the dashboard current means keeping `.agile-loop/status.json` and `docs/agile-loop/tasks/*.md` current.
+
+The Codex adapter (`scripts/agile-loop.sh::ensure_dashboard`) implements the same algorithm with the same flag names and same default port; both adapters must stay in sync.
+
 ## Guardrails (non-negotiable)
 
 - One PR per queued task.
@@ -351,5 +384,5 @@ Concrete acceptance criteria.
 
 - Prompt contracts (host-neutral documentation): `references/prompts.md`. Both adapters inline equivalent templates at runtime; that file is the spec, not a runtime dependency.
 - Codex adapter (reference implementation for retry / JSON parsing / status writes): `scripts/agile-loop.sh`.
-- Dashboard: `scripts/agile-dashboard.py` (defaults to `http://127.0.0.1:8765`; reads `.agile-loop/status.json`).
+- Dashboard: `scripts/agile-dashboard.py` (defaults to `http://127.0.0.1:8765`; reads `.agile-loop/status.json`). Auto-started by both adapters during pre-flight — see **Dashboard auto-start**.
 - Codex-side metadata: `agents/openai.yaml`. Claude-side metadata: `agents/claude.yaml`.

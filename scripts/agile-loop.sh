@@ -18,9 +18,18 @@ RETRY_COUNT="3"
 RETRY_INITIAL_SECONDS="${AGILE_LOOP_RETRY_INITIAL_SECONDS:-${RALPH_LOOP_RETRY_INITIAL_SECONDS:-5}}"
 DRY_RUN="0"
 UNSAFE_BYPASS_APPROVALS="${AGILE_LOOP_UNSAFE_BYPASS:-0}"
+DASHBOARD_HOST="${AGILE_LOOP_DASHBOARD_HOST:-127.0.0.1}"
+DASHBOARD_PORT="${AGILE_LOOP_DASHBOARD_PORT:-8765}"
+AUTO_DASHBOARD="1"
+[ "${AGILE_LOOP_NO_DASHBOARD:-0}" = "1" ] && AUTO_DASHBOARD="0"
 CURRENT_TASK=""
 CURRENT_ITERATION=""
 CURRENT_STAGE=""
+
+# Resolve script dir before any `cd`, so we can find the dashboard script
+# regardless of how the user invoked agile-loop.sh.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DASHBOARD_SCRIPT="$SCRIPT_DIR/agile-dashboard.py"
 
 CODEX_BIN="${CODEX_BIN:-codex}"
 GH_BIN="${GH_BIN:-gh}"
@@ -44,6 +53,9 @@ Options:
   --max-parallel N            Max remediation sub-agents to request. Defaults to 6.
   --dry-run                   Print planned sessions without invoking the runner adapter or changing task status.
   --unsafe-bypass-approvals   Required for non-dry-run execution. Child sessions use approval/sandbox bypass.
+  --dashboard-host HOST       Dashboard bind host. Defaults to 127.0.0.1 (env AGILE_LOOP_DASHBOARD_HOST).
+  --dashboard-port N          Dashboard bind port. Defaults to 8765 (env AGILE_LOOP_DASHBOARD_PORT).
+  --no-dashboard              Do not auto-start the status dashboard (env AGILE_LOOP_NO_DASHBOARD=1).
   -h, --help                  Show this help.
 
 Failed loop stages are retried 3 times with exponential backoff.
@@ -71,6 +83,9 @@ while [ "$#" -gt 0 ]; do
     --max-parallel) MAX_PARALLEL_REMEDIATION="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN="1"; shift ;;
     --unsafe-bypass-approvals) UNSAFE_BYPASS_APPROVALS="1"; shift ;;
+    --dashboard-host) DASHBOARD_HOST="${2:-}"; shift 2 ;;
+    --dashboard-port) DASHBOARD_PORT="${2:-}"; shift 2 ;;
+    --no-dashboard) AUTO_DASHBOARD="0"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -84,7 +99,10 @@ if [ "$DRY_RUN" != "1" ] && [ "$UNSAFE_BYPASS_APPROVALS" != "1" ]; then
 fi
 
 cd "$REPO"
-REPO="$(pwd)"
+# pwd -P resolves symlinks (e.g. /tmp -> /private/tmp on macOS) so $REPO matches
+# the canonical path that scripts/agile-dashboard.py reports via /api/status —
+# otherwise ensure_dashboard would needlessly reclaim the dashboard each run.
+REPO="$(pwd -P)"
 
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$STATE_ROOT/$RUN_ID"
@@ -232,6 +250,78 @@ cleanup_status_heartbeat() {
 trap cleanup_status_heartbeat EXIT
 trap 'cleanup_status_heartbeat; exit 130' INT
 trap 'cleanup_status_heartbeat; exit 143' TERM
+
+# Start scripts/agile-dashboard.py for $REPO on $DASHBOARD_HOST:$DASHBOARD_PORT,
+# or reuse a running dashboard already pointed at $REPO. If the port is held by
+# a different repo, kill that listener and respawn pointed here — the user-facing
+# contract is that http://$DASHBOARD_HOST:$DASHBOARD_PORT always reflects the
+# active loop. Dashboard outlives this run so the final state stays visible.
+ensure_dashboard() {
+  if [ "$AUTO_DASHBOARD" != "1" ]; then
+    log "dashboard auto-start disabled; expecting one to already be running at http://$DASHBOARD_HOST:$DASHBOARD_PORT"
+    return 0
+  fi
+  if [ ! -f "$DASHBOARD_SCRIPT" ]; then
+    log "WARNING: dashboard script not found at $DASHBOARD_SCRIPT; skipping auto-start"
+    return 0
+  fi
+
+  local url="http://$DASHBOARD_HOST:$DASHBOARD_PORT"
+  local current_repo=""
+  if command -v curl >/dev/null 2>&1; then
+    current_repo="$(curl -fsS --max-time 2 "$url/api/status" 2>/dev/null \
+      | "$PYTHON_BIN" -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("repo",""))
+except Exception:
+    pass' 2>/dev/null || true)"
+  fi
+  if [ -n "$current_repo" ] && [ "$current_repo" = "$REPO" ]; then
+    log "dashboard already serving $REPO at $url"
+    return 0
+  fi
+
+  if [ -n "$current_repo" ]; then
+    log "dashboard at $url is serving $current_repo; reclaiming for $REPO"
+    if command -v lsof >/dev/null 2>&1; then
+      local pids
+      pids="$(lsof -ti tcp:"$DASHBOARD_PORT" -sTCP:LISTEN 2>/dev/null || true)"
+      if [ -n "$pids" ]; then
+        # shellcheck disable=SC2086
+        kill $pids >/dev/null 2>&1 || true
+        sleep 1
+        # shellcheck disable=SC2086
+        kill -9 $pids >/dev/null 2>&1 || true
+      fi
+    else
+      log "WARNING: lsof not available; cannot reclaim port $DASHBOARD_PORT (leaving stale dashboard up)"
+      return 0
+    fi
+  fi
+
+  mkdir -p "$(dirname "$STATUS_FILE")"
+  local pid_file=".agile-loop/dashboard.pid"
+  local log_file="$RUN_DIR/dashboard.log"
+  # nohup + setsid-equivalent (subshell + disown) so the dashboard outlives this loop.
+  (
+    "$PYTHON_BIN" "$DASHBOARD_SCRIPT" \
+      --repo "$REPO" \
+      --status-file "$STATUS_FILE" \
+      --queue-glob "$QUEUE_GLOB" \
+      --host "$DASHBOARD_HOST" \
+      --port "$DASHBOARD_PORT" \
+      >"$log_file" 2>&1 &
+    echo "$!" >"$pid_file"
+    disown 2>/dev/null || true
+  )
+  sleep 1
+  if command -v curl >/dev/null 2>&1 \
+     && curl -fsS --max-time 2 "$url/api/status" >/dev/null 2>&1; then
+    log "dashboard started for $REPO at $url (pid $(cat "$pid_file" 2>/dev/null || echo '?'), log $log_file)"
+  else
+    log "WARNING: dashboard did not respond at $url within 1s; check $log_file"
+  fi
+}
 
 retry_delay_for_attempt() {
   local retry_number="$1"
@@ -1024,6 +1114,7 @@ run_iteration() {
 main() {
   log "agile-loop start repo=$REPO base=$BASE max_iterations=$MAX_ITERATIONS queue=$QUEUE_GLOB"
   write_status "running" "start" "running" "agile-loop started" "" ""
+  ensure_dashboard
   warn_stranded_doing_tasks
   local iteration task
   iteration=1
