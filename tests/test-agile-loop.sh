@@ -73,7 +73,6 @@ if grep -q "stage: plan" <<<"$prompt"; then stage="plan"; fi
 if grep -q "stage: implement" <<<"$prompt"; then stage="implement"; fi
 if grep -q "deep review pass 1" <<<"$prompt"; then stage="deep-review-pass-1"; fi
 if grep -q "remediate deep review" <<<"$prompt"; then stage="remediate-deep-review"; fi
-if grep -q "gstack review" <<<"$prompt"; then stage="gstack-review"; fi
 if grep -q "qa-only full" <<<"$prompt"; then stage="qa-only"; fi
 if grep -q "remediate qa" <<<"$prompt"; then stage="remediate-qa"; fi
 if grep -q "deep review pass 2" <<<"$prompt"; then stage="deep-review-pass-2"; fi
@@ -439,7 +438,6 @@ assert_session_sequence "$repo_zero/codex.log" \
   plan \
   implement \
   deep-review-pass-1 \
-  gstack-review \
   qa-only \
   deep-review-pass-2 \
   ship
@@ -463,7 +461,6 @@ assert_session_sequence "$repo_cr/codex.log" \
   implement \
   deep-review-pass-1 \
   remediate-deep-review \
-  gstack-review \
   qa-only \
   deep-review-pass-2 \
   remediate-deep-review \
@@ -479,7 +476,6 @@ assert_session_sequence "$repo_qa/codex.log" \
   plan \
   implement \
   deep-review-pass-1 \
-  gstack-review \
   qa-only \
   remediate-qa \
   deep-review-pass-2 \
@@ -712,7 +708,7 @@ if [ "$rc" = "0" ]; then
 fi
 [ "$(status_of "$repo_no_pr/docs/agile-loop/tasks/001-test.md")" = "blocked" ]
 assert_json_value "$repo_no_pr/.agile-loop/status.json" status blocked
-assert_json_value "$repo_no_pr/.agile-loop/status.json" stage 10-ship
+assert_json_value "$repo_no_pr/.agile-loop/status.json" stage 09-ship
 assert_contains "$repo_no_pr/run.out" "ship stage returned no pr_url"
 if [ -f "$repo_no_pr/gh.log" ]; then
   echo "Expected no gh merge when ship returned no pr_url" >&2

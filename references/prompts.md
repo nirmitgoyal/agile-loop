@@ -2,7 +2,7 @@
 
 Agile Loop uses these prompt shapes for fresh child agent sessions. Both supported adapters template the same shapes: the Codex adapter (`scripts/agile-loop.sh`) sends them through `codex exec --ephemeral`, and the Claude Code adapter (`SKILL.md`) sends them through `claude -p`. Keep final JSON lines intact; adapters use them for branching and retry JSON-contract stages when the final JSON line is missing. Child sessions must reconstruct context from the repository, task file, and explicit output files rather than prior session history.
 
-**Model tiers and effort.** Per stage, **implementation** uses each host's second-best model; **every other stage** uses the best/latest model (shown inline below as `Model tier:`). Effort layers on top: the Claude adapter runs **implementation** and the **code-review** stages (deep-review and GStack `/review`) at `--effort max`, and every other stage at default effort. Resolve tiers to concrete ids per host, shifting them up as newer releases land: Claude uses `claude-opus-4-8` (best/latest, via the `opus` alias) / `claude-opus-4-7` (second-best); the Codex adapter uses `gpt-5.5` / `gpt-5.4`.
+**Model tiers and effort.** Per stage, **implementation** uses each host's second-best model; **every other stage** uses the best/latest model (shown inline below as `Model tier:`). Effort layers on top: the Claude adapter runs **implementation** and the **code-review** stages (both deep-review passes) at `--effort max`, and every other stage at default effort. Resolve tiers to concrete ids per host, shifting them up as newer releases land: Claude uses `claude-opus-4-8` (best/latest, via the `opus` alias) / `claude-opus-4-7` (second-best); the Codex adapter uses `gpt-5.5` / `gpt-5.4`.
 
 ## Planning Session
 
@@ -101,25 +101,6 @@ This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all
 Read the deep-review output. Only if it contains Critical or Major issues, spawn scoped sub-agents to fix those issues. Keep each sub-agent's write scope disjoint and tied to one finding or file group. Do not fix Minor issues unless they are necessary for a Critical or Major fix.
 
 Run targeted validation for the changed files. End with:
-STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
-```
-
-## GStack Review Session
-
-Model tier: **best / latest** — Claude `claude-opus-4-8` (the `opus` alias), Codex `gpt-5.5`.
-
-```
-You are running agile-loop stage: gstack review.
-
-Repository: {repo}
-Base branch: {base}
-Task file: {task_file}
-
-Session isolation:
-This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all context from the repository, task file, and referenced stage output files. Do not rely on previous child-session chat history. Do not resume any prior session.
-
-Use /review. Apply auto-fixes and handle the workflow exactly as the skill requires. Stop with BLOCKED if /review needs mandatory human judgment.
-End with:
 STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 ```
 

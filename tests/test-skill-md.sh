@@ -299,7 +299,7 @@ for stage_token in claim merge sync-base complete; do
     || fail "SKILL.md stage enum must include the canonical stage '$stage_token'"
 done
 # The agent-backed pipeline stages (un-numbered names) must also be in the enum.
-for stage_token in plan implement deep-review remediate-deep-review gstack-review qa remediate-qa ship; do
+for stage_token in plan implement deep-review remediate-deep-review qa remediate-qa ship; do
   grep -qE "[\"|]$stage_token[\"|]" <<< "$STAGE_ENUM_LINE" \
     || fail "SKILL.md stage enum must include the canonical pipeline stage '$stage_token'"
 done
