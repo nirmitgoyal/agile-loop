@@ -1,13 +1,13 @@
 ---
 name: agile-loop
-description: Run the queued GStack → GSD → Superpowers → review → ship loop end-to-end. Reads tasks from `docs/agile-loop/tasks/*.md`, spawns isolated child sessions per stage, opens one PR per task, and waits for the human to merge before continuing. Use when asked to "run the agile loop", "process the next queued task", or "drive the autonomous engineering loop".
+description: Run the queued GStack → GSD → Superpowers → review → ship loop end-to-end. Reads tasks from `docs/agile-loop/tasks/*.md`, spawns isolated child sessions per stage, opens one PR per task, and auto-merges it (squash) before continuing to the next task. Use when asked to "run the agile loop", "process the next queued task", or "drive the autonomous engineering loop".
 allowed-tools:
   - Bash
   - Read
   - Write
   - Edit
   - Glob
-argument-hint: "[--repo PATH] [--base BRANCH] [--max-iterations N] [--poll-interval SECONDS] [--unsafe-bypass-approvals] [--dry-run]"
+argument-hint: "[--repo PATH] [--base BRANCH] [--max-iterations N] [--unsafe-bypass-approvals] [--dry-run]"
 ---
 
 # Agile Loop — Claude Code adapter
@@ -18,7 +18,7 @@ When you spawn a child via `claude -p "<prompt>"`, that is the Claude-side equiv
 
 ## Pre-flight
 
-1. Parse args (all optional): `--repo PATH` (default `$PWD`), `--base BRANCH` (default `main`), `--max-iterations N` (default 10), `--poll-interval SECONDS` (default 60), `--unsafe-bypass-approvals` (boolean), `--dry-run` (boolean). `cd` into the resolved repo root.
+1. Parse args (all optional): `--repo PATH` (default `$PWD`), `--base BRANCH` (default `main`), `--max-iterations N` (default 10), `--unsafe-bypass-approvals` (boolean), `--dry-run` (boolean). `cd` into the resolved repo root.
 2. Resolve approval bypass: live runs require either `--unsafe-bypass-approvals` or `AGILE_LOOP_UNSAFE_BYPASS=1` in the environment. If neither is set and `--dry-run` is also not set, stop with a clear blocked message — the Codex adapter has the same gate (`scripts/agile-loop.sh`).
 3. Confirm `git`, `gh`, `claude`, and `python3` are on `PATH`. If any are missing, write a blocked status with a clear message and stop.
 4. Create `.agile-loop/` and `.agile-loop/runs/<RUN_ID>/` if missing. Generate a `RUN_ID` (UTC timestamp + short random).
@@ -98,7 +98,7 @@ The steps (identical contract to `scripts/agile-loop.sh`):
 8. **Deep review pass 2** — `Deep Review Session` template, `{pass}=2`. Parse the same JSON shape.
 9. **Remediate deep review pass 2** — only if pass 2 has `critical>0 || major>0`.
 10. **Ship** — `Ship Session` template. Parse the final JSON line `{"blocked","pr_url","summary"}`. Capture `pr_url`.
-11. **Poll for merge** — see **Post-merge handling** below.
+11. **Auto-merge** — the loop merges the PR itself; see **Auto-merge handling** below. Do not wait for a human.
 
 Spawn each step's child with the `--model` and effort from **Model and effort routing**: implementation on the second-best Opus at `--effort max`, code review (deep-review and GStack `/review`) on the latest Opus at `--effort max`, and every other stage on the latest Opus at default effort. Update status.json before and after each step. Use `stage` values `plan`, `implement`, `deep-review`, `remediate-deep-review`, `gstack-review`, `qa`, `remediate-qa`, `ship`.
 
@@ -108,18 +108,17 @@ Spawn each step's child with the `--model` and effort from **Model and effort ro
 - Do NOT retry on: explicit `BLOCKED` or `NEEDS_CONTEXT` in the child output, or `blocked: true` in a JSON-contract stage's final line. Stop immediately: write `status: blocked` with the child's reason, flip the task file frontmatter back to `status: blocked` (writing the reason into the task file body as a `## Blocked` section), and exit the loop.
 - For non-JSON stages, the final `STATUS:` line drives branching. `DONE` and `DONE_WITH_CONCERNS` continue; `BLOCKED` and `NEEDS_CONTEXT` stop.
 
-### 3. Post-merge handling
+### 3. Auto-merge handling
 
-After step 10 writes `pr_url`:
+After step 10 writes `pr_url`, the loop merges the PR itself — there is no human merge gate and no polling:
 
-1. Write `status: waiting`, `stage: poll-merge`. Every `--poll-interval` seconds, run `gh pr view <pr_url> --json state,mergedAt,mergeable`.
-2. While the PR is open and unmerged, keep polling. If the PR closes unmerged, set `status: blocked` with reason "PR closed unmerged" and exit.
-3. When `mergedAt` is non-null:
+1. Write `status: running`, `stage: merge`. Squash-merge the PR with admin override and branch cleanup: `gh pr merge <pr_url> --squash --admin --delete-branch`. `--admin` forces past branch protection / required checks so the loop never blocks waiting on a reviewer or CI gate. Retry the merge on transient failure with the same budget as every other step (3 attempts, exponential backoff 5s, 10s, 20s — see **Retry policy per agent-backed step**). If `gh pr merge` exits non-zero, do not block immediately: re-check the PR's real state with `gh pr view <pr_url> --json state`. If `state` is `MERGED`, treat it as success and continue — this is common when the repo auto-deletes head branches, so `--delete-branch` errors on an already-gone branch; only log a warning that the branch cleanup failed. Set `status: blocked` (reason e.g. "failed to squash-merge PR <pr_url>") and stop ONLY if the PR is genuinely not `MERGED` after retries are exhausted. In `--dry-run`, do not merge; log "DRY RUN: would run gh pr merge <pr_url> --squash --admin --delete-branch".
+2. Sync the base branch. Write `stage: sync-base`, then:
    - `git fetch origin <base>`.
-   - `git checkout <base>`.
+   - `git checkout <base>` (or `git switch <base>`).
    - Fast-forward only: `git merge --ff-only refs/remotes/origin/<base>`. If the fast-forward fails, set `status: blocked` with reason "base branch <base> diverged from origin; cannot fast-forward" and stop. **Do not rebase or force-update.**
-4. Edit the task file's frontmatter to `status: done`. Write status.json with `stage: complete`, `stage_status: completed`.
-5. If iterations remain and the queue has more `todo` tasks, continue to the next iteration. Otherwise stop with `status: idle`.
+3. Edit the task file's frontmatter to `status: done`. Write status.json with `stage: complete`, `stage_status: completed`.
+4. If iterations remain and the queue has more `todo` tasks, continue to the next iteration. Otherwise stop with `status: idle`.
 
 ## Prompt templates
 
@@ -299,7 +298,7 @@ Both adapters write `.agile-loop/status.json` with this schema. **These field na
   "repo": "<absolute repo path>",
   "base": "<base branch>",
   "status": "starting|running|waiting|blocked|idle|dry_run",
-  "stage": "claim|plan|implement|deep-review|remediate-deep-review|gstack-review|qa|remediate-qa|ship|poll-merge|sync-base|complete|dashboard",
+  "stage": "claim|plan|implement|deep-review|remediate-deep-review|gstack-review|qa|remediate-qa|ship|merge|sync-base|complete|dashboard",
   "stage_status": "running|completed|failed|retrying|blocked|waiting|skipped",
   "message": "human-readable summary",
   "task_file": "<absolute path to task file, or empty>",
@@ -318,12 +317,12 @@ Write status atomically — temp file under `.agile-loop/` then `mv`. The canoni
 ## Guardrails (non-negotiable)
 
 - One PR per queued task.
-- Stop instead of guessing on: `BLOCKED`, `NEEDS_CONTEXT`, failed tests, mandatory user judgment, missing authentication, or closed-unmerged PR state.
+- Stop instead of guessing on: `BLOCKED`, `NEEDS_CONTEXT`, failed tests, mandatory user judgment, missing authentication, or a failed auto-merge.
 - Delegate review and QA fixes only after findings exist (no preemptive cleanup).
 - Keep remediation scoped to the finding source. Do not broaden into cleanup.
 - Prefer repo guidance from `AGENTS.md` when present in the target repo.
-- Do not skip the human merge gate. The loop continues only after the PR is merged.
-- Do not mark a task `done` until the configured base branch has successfully fast-forwarded to `origin/<base>`. Do not use a post-merge rebase to replay local base-branch commits.
+- Auto-merge each task's PR (`gh pr merge --squash --admin --delete-branch`) — do not wait for a human and do not poll. Retry the merge on transient failure, then re-check the PR's real state: a PR that is genuinely not `MERGED` after retries are exhausted blocks the loop, but a successful merge whose branch cleanup failed (e.g. the head branch was already auto-deleted) does NOT block — just warn and continue. The loop proceeds once the PR is merged and the base branch is synced.
+- Do not mark a task `done` until the PR is merged and the configured base branch has successfully fast-forwarded to `origin/<base>`. Do not use a post-merge rebase to replay local base-branch commits.
 - `--dry-run` prints what would happen and writes `status: dry_run` / `stage_status: skipped` for each stage. Do not spawn child sessions, do not mutate task files, do not run `git fetch` or `gh` write operations.
 - Live runs must be opted into with `--unsafe-bypass-approvals` (or `AGILE_LOOP_UNSAFE_BYPASS=1`); otherwise refuse to spawn child sessions.
 

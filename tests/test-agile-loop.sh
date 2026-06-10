@@ -135,11 +135,38 @@ set -euo pipefail
 printf '%s\n' "$*" >> "${FAKE_GH_LOG:?}"
 
 args=" $* "
-if [[ "$args" == *" --json state,mergedAt "* ]]; then
-  if [ "${FAKE_GH_CLOSED:-0}" = "1" ]; then
-    printf '{"state":"CLOSED","mergedAt":null}\n'
-  else
-    printf '{"state":"MERGED","mergedAt":"2026-05-27T00:00:00Z"}\n'
+
+# `gh pr view ... --json state ...`: report the PR state. Defaults to MERGED so
+# a branch-cleanup-only failure looks like a successful merge to the runner.
+if [[ "$args" == *" pr view "* ]] && [[ "$args" == *"state"* ]]; then
+  printf '%s\n' "${FAKE_GH_PR_STATE:-MERGED}"
+  exit 0
+fi
+
+if [[ "$args" == *" pr merge "* ]]; then
+  # Hard merge failure: the squash merge itself fails.
+  if [ "${FAKE_GH_MERGE_FAIL:-0}" = "1" ]; then
+    echo "fake gh pr merge failure" >&2
+    exit 9
+  fi
+  # Branch-delete failure: the merge succeeded but `--delete-branch` failed, so
+  # `gh pr merge` exits non-zero even though `pr view` will report MERGED.
+  if [ "${FAKE_GH_DELETE_BRANCH_FAIL:-0}" = "1" ]; then
+    echo "fake gh pr merge branch-delete failure" >&2
+    exit 9
+  fi
+  # Transient merge failure: fail the first N invocations, then succeed.
+  if [ -n "${FAKE_GH_MERGE_FAIL_COUNT:-}" ] && [ "${FAKE_GH_MERGE_FAIL_COUNT}" != "0" ]; then
+    counter_file="${FAKE_GH_MERGE_COUNTER_FILE:?}"
+    current_count="0"
+    if [ -f "$counter_file" ]; then
+      current_count="$(cat "$counter_file")"
+    fi
+    if [ "$current_count" -lt "${FAKE_GH_MERGE_FAIL_COUNT}" ]; then
+      echo $((current_count + 1)) > "$counter_file"
+      echo "transient fake gh pr merge failure" >&2
+      exit 9
+    fi
   fi
   exit 0
 fi
@@ -310,11 +337,14 @@ run_case() {
   local critical="$2"
   local major="$3"
   local qa_issues="$4"
-  local closed="$5"
+  local merge_fail="$5"
   local expect_exit="$6"
   local fail_stage="${7:-}"
   local fail_count="${8:-0}"
   local fail_git_pull="${9:-0}"
+  local pr_state="${10:-MERGED}"
+  local delete_branch_fail="${11:-0}"
+  local merge_fail_count="${12:-0}"
 
   local repo="$TMP_ROOT/$name"
   make_repo "$repo"
@@ -332,7 +362,11 @@ run_case() {
   FAKE_CRITICAL="$critical" \
   FAKE_MAJOR="$major" \
   FAKE_QA_ISSUES="$qa_issues" \
-  FAKE_GH_CLOSED="$closed" \
+  FAKE_GH_MERGE_FAIL="$merge_fail" \
+  FAKE_GH_PR_STATE="$pr_state" \
+  FAKE_GH_DELETE_BRANCH_FAIL="$delete_branch_fail" \
+  FAKE_GH_MERGE_FAIL_COUNT="$merge_fail_count" \
+  FAKE_GH_MERGE_COUNTER_FILE="$repo/gh-merge-counter" \
   FAKE_FAIL_STAGE="$fail_stage" \
   FAKE_FAIL_COUNT="$fail_count" \
   FAKE_GIT_FAIL_PULL="$fail_git_pull" \
@@ -341,7 +375,7 @@ run_case() {
   CODEX_BIN="$repo/bin/codex" \
   GH_BIN="$repo/bin/gh" \
   GIT_BIN="$repo/bin/git" \
-  "$RUNNER" --repo "$repo" --base main --max-iterations 1 --poll-interval 1 --poll-timeout 2 --unsafe-bypass-approvals > "$repo/run.out" 2>&1 || rc=$?
+  "$RUNNER" --repo "$repo" --base main --max-iterations 1 --unsafe-bypass-approvals > "$repo/run.out" 2>&1 || rc=$?
 
   if [ "$expect_exit" = "0" ] && [ "$rc" != "0" ]; then
     cat "$repo/run.out" >&2
@@ -416,7 +450,7 @@ assert_not_contains "$repo_zero/codex.log" "remediate-qa"
 assert_json_value "$repo_zero/.agile-loop/status.json" status completed
 assert_json_value "$repo_zero/.agile-loop/status.json" stage complete
 assert_json_value "$repo_zero/.agile-loop/status.json" task_title "Test task"
-assert_contains "$repo_zero/gh.log" "^pr view https://github.com/acme/repo/pull/1 --json state,mergedAt$"
+assert_contains "$repo_zero/gh.log" "^pr merge https://github.com/acme/repo/pull/1 --squash --admin --delete-branch$"
 assert_contains "$repo_zero/git.log" "^fetch origin +refs/heads/main:refs/remotes/origin/main$"
 assert_contains "$repo_zero/git.log" "^switch main$"
 assert_contains "$repo_zero/git.log" "^merge --ff-only refs/remotes/origin/main$"
@@ -483,7 +517,7 @@ AGILE_LOOP_RETRY_INITIAL_SECONDS="0" \
 CODEX_BIN="$repo_heartbeat/bin/codex" \
 GH_BIN="$repo_heartbeat/bin/gh" \
 GIT_BIN="$repo_heartbeat/bin/git" \
-"$RUNNER" --repo "$repo_heartbeat" --base main --max-iterations 1 --poll-interval 1 --poll-timeout 2 --unsafe-bypass-approvals > "$repo_heartbeat/run.out" 2>&1 &
+"$RUNNER" --repo "$repo_heartbeat" --base main --max-iterations 1 --unsafe-bypass-approvals > "$repo_heartbeat/run.out" 2>&1 &
 heartbeat_pid="$!"
 
 wait_for_json_value "$repo_heartbeat/.agile-loop/status.json" stage "01-plan"
@@ -522,11 +556,48 @@ assert_contains "$repo_retry_exhausted/run.out" "02-implement session failed aft
 assert_json_value "$repo_retry_exhausted/.agile-loop/status.json" status blocked
 assert_json_value "$repo_retry_exhausted/.agile-loop/status.json" stage 02-implement
 
-repo_closed="$(run_case closed-unmerged 0 0 0 1 1)"
-assert_all_fresh_sessions "$repo_closed/codex.log"
-[ "$(status_of "$repo_closed/docs/agile-loop/tasks/001-test.md")" = "blocked" ]
-assert_json_value "$repo_closed/.agile-loop/status.json" status blocked
-assert_json_value "$repo_closed/.agile-loop/status.json" stage poll-merge
+# Auto-merge hard failure: `gh pr merge` fails AND `pr view` reports the PR is
+# not MERGED, so the runner exhausts retries and blocks at the merge stage (no
+# polling, no human gate). With retry, gh.log now holds several `pr merge` lines.
+repo_merge_fail="$(run_case merge-fails 0 0 0 1 1 "" 0 0 OPEN)"
+assert_all_fresh_sessions "$repo_merge_fail/codex.log"
+[ "$(status_of "$repo_merge_fail/docs/agile-loop/tasks/001-test.md")" = "blocked" ]
+assert_json_value "$repo_merge_fail/.agile-loop/status.json" status blocked
+assert_json_value "$repo_merge_fail/.agile-loop/status.json" stage merge
+assert_contains "$repo_merge_fail/gh.log" "^pr merge https://github.com/acme/repo/pull/1 --squash --admin --delete-branch$"
+merge_attempts="$(grep -c '^pr merge https://github.com/acme/repo/pull/1 --squash --admin --delete-branch$' "$repo_merge_fail/gh.log")"
+if [ "$merge_attempts" -lt 1 ]; then
+  cat "$repo_merge_fail/run.out" >&2
+  echo "Expected at least one pr merge attempt in gh.log, got $merge_attempts" >&2
+  exit 1
+fi
+
+# Finding 1: the squash merge succeeds but `--delete-branch` cleanup fails, so
+# `gh pr merge` exits non-zero. `pr view` reports MERGED, so the runner must
+# treat it as success and the loop completes.
+repo_delete_branch_fail="$(run_case delete-branch-fails-but-merged 0 0 0 0 0 "" 0 0 MERGED 1)"
+assert_all_fresh_sessions "$repo_delete_branch_fail/codex.log"
+[ "$(status_of "$repo_delete_branch_fail/docs/agile-loop/tasks/001-test.md")" = "done" ]
+assert_json_value "$repo_delete_branch_fail/.agile-loop/status.json" status completed
+assert_contains "$repo_delete_branch_fail/gh.log" "^pr merge https://github.com/acme/repo/pull/1 --squash --admin --delete-branch$"
+assert_contains "$repo_delete_branch_fail/git.log" "^fetch origin +refs/heads/main:refs/remotes/origin/main$"
+assert_contains "$repo_delete_branch_fail/git.log" "^switch main$"
+assert_contains "$repo_delete_branch_fail/git.log" "^merge --ff-only refs/remotes/origin/main$"
+
+# Finding 2: `gh pr merge` fails transiently the first time, then succeeds on
+# retry. `pr view` reports OPEN on the failure so the runner does NOT treat it
+# as an already-merged success and instead retries. The loop must complete and
+# gh.log must show more than one `pr merge`.
+repo_merge_retry="$(run_case transient-merge-retry 0 0 0 0 0 "" 0 0 OPEN 0 1)"
+assert_all_fresh_sessions "$repo_merge_retry/codex.log"
+[ "$(status_of "$repo_merge_retry/docs/agile-loop/tasks/001-test.md")" = "done" ]
+assert_json_value "$repo_merge_retry/.agile-loop/status.json" status completed
+merge_retry_attempts="$(grep -c '^pr merge https://github.com/acme/repo/pull/1 --squash --admin --delete-branch$' "$repo_merge_retry/gh.log")"
+if [ "$merge_retry_attempts" -lt 2 ]; then
+  cat "$repo_merge_retry/run.out" >&2
+  echo "Expected more than one pr merge attempt after a transient failure, got $merge_retry_attempts" >&2
+  exit 1
+fi
 
 repo_sync_failed="$(run_case sync-fast-forward-fails 0 0 0 0 1 "" 0 1)"
 assert_all_fresh_sessions "$repo_sync_failed/codex.log"
@@ -609,7 +680,7 @@ AGILE_LOOP_RETRY_INITIAL_SECONDS="0" \
 CODEX_BIN="$repo_prose/bin/codex" \
 GH_BIN="$repo_prose/bin/gh" \
 GIT_BIN="$repo_prose/bin/git" \
-"$RUNNER" --repo "$repo_prose" --base main --max-iterations 1 --poll-interval 1 --poll-timeout 2 --unsafe-bypass-approvals > "$repo_prose/run.out" 2>&1 || rc=$?
+"$RUNNER" --repo "$repo_prose" --base main --max-iterations 1 --unsafe-bypass-approvals > "$repo_prose/run.out" 2>&1 || rc=$?
 if [ "$rc" != "0" ]; then
   cat "$repo_prose/run.out" >&2
   echo "Expected prose-mentioning-BLOCKED case to complete, not halt the loop" >&2
@@ -618,7 +689,7 @@ fi
 [ "$(status_of "$repo_prose/docs/agile-loop/tasks/001-test.md")" = "done" ]
 assert_json_value "$repo_prose/.agile-loop/status.json" status completed
 
-# Finding 4: ship JSON without pr_url must block at the ship/poll stage.
+# Finding 4: ship JSON without pr_url must block at the ship stage, before merge.
 repo_no_pr="$TMP_ROOT/ship-no-pr-url"
 make_repo "$repo_no_pr"
 write_fake_codex "$repo_no_pr"
@@ -633,7 +704,7 @@ AGILE_LOOP_RETRY_INITIAL_SECONDS="0" \
 CODEX_BIN="$repo_no_pr/bin/codex" \
 GH_BIN="$repo_no_pr/bin/gh" \
 GIT_BIN="$repo_no_pr/bin/git" \
-"$RUNNER" --repo "$repo_no_pr" --base main --max-iterations 1 --poll-interval 1 --poll-timeout 2 --unsafe-bypass-approvals > "$repo_no_pr/run.out" 2>&1 || rc=$?
+"$RUNNER" --repo "$repo_no_pr" --base main --max-iterations 1 --unsafe-bypass-approvals > "$repo_no_pr/run.out" 2>&1 || rc=$?
 if [ "$rc" = "0" ]; then
   cat "$repo_no_pr/run.out" >&2
   echo "Expected ship-without-pr_url to block" >&2
@@ -644,7 +715,7 @@ assert_json_value "$repo_no_pr/.agile-loop/status.json" status blocked
 assert_json_value "$repo_no_pr/.agile-loop/status.json" stage 10-ship
 assert_contains "$repo_no_pr/run.out" "ship stage returned no pr_url"
 if [ -f "$repo_no_pr/gh.log" ]; then
-  echo "Expected no gh poll when ship returned no pr_url" >&2
+  echo "Expected no gh merge when ship returned no pr_url" >&2
   exit 1
 fi
 
@@ -673,7 +744,7 @@ AGILE_LOOP_RETRY_INITIAL_SECONDS="0" \
 CODEX_BIN="$repo_space/bin/codex" \
 GH_BIN="$repo_space/bin/gh" \
 GIT_BIN="$repo_space/bin/git" \
-"$RUNNER" --repo "$repo_space" --base main --max-iterations 1 --poll-interval 1 --poll-timeout 2 --unsafe-bypass-approvals > "$repo_space/run.out" 2>&1 || rc=$?
+"$RUNNER" --repo "$repo_space" --base main --max-iterations 1 --unsafe-bypass-approvals > "$repo_space/run.out" 2>&1 || rc=$?
 if [ "$rc" != "0" ]; then
   cat "$repo_space/run.out" >&2
   echo "Expected task filename with a space to be found and processed" >&2

@@ -286,7 +286,7 @@ RUNNER_STATUS_VALUES="$(grep -oE 'write_status "[a-z_]+"' "$RUNNER_SH" \
 [ -n "$RUNNER_STATUS_VALUES" ] || fail "could not extract loop-status values emitted by $RUNNER_SH"
 # 'start', 'done', and 'completed' are runner-internal lifecycle states; the
 # documented enum is the dashboard vocabulary. Assert the shared core set.
-for status_value in running waiting blocked idle dry_run; do
+for status_value in running blocked idle dry_run; do
   grep -qF "$status_value" <<< "$RUNNER_STATUS_VALUES" \
     || fail "expected core loop-status '$status_value' to be emitted by scripts/agile-loop.sh"
   grep -qE "[\"|]$status_value[\"|]" <<< "$STATUS_ENUM_LINE" \
@@ -294,7 +294,7 @@ for status_value in running waiting blocked idle dry_run; do
 done
 # Core stage tokens that name pipeline phases (un-numbered) — the runner emits
 # these directly and SKILL.md must document them in the stage enum.
-for stage_token in claim poll-merge sync-base complete; do
+for stage_token in claim merge sync-base complete; do
   grep -qE "[\"|]$stage_token[\"|]" <<< "$STAGE_ENUM_LINE" \
     || fail "SKILL.md stage enum must include the canonical stage '$stage_token'"
 done
