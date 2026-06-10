@@ -6,8 +6,6 @@ set -euo pipefail
 REPO=""
 BASE="main"
 MAX_ITERATIONS="10"
-POLL_INTERVAL="60"
-POLL_TIMEOUT="0"
 QUEUE_GLOB="docs/agile-loop/tasks/*.md"
 STATE_ROOT=".agile-loop/runs"
 STATUS_FILE=".agile-loop/status.json"
@@ -37,8 +35,6 @@ Options:
   --repo PATH                 Repository to run in. Defaults to current directory.
   --base BRANCH               Base branch. Defaults to main.
   --max-iterations N          Maximum queued tasks to process. Defaults to 10.
-  --poll-interval SECONDS     PR merge polling interval. Defaults to 60.
-  --poll-timeout SECONDS      Stop polling after this many seconds. 0 means no timeout.
   --queue-glob GLOB           Queue glob relative to repo. Defaults to docs/agile-loop/tasks/*.md.
   --state-root PATH           State root relative to repo. Defaults to .agile-loop/runs.
   --status-file PATH          Dashboard status JSON path relative to repo. Defaults to .agile-loop/status.json.
@@ -66,8 +62,6 @@ while [ "$#" -gt 0 ]; do
     --repo) REPO="${2:-}"; shift 2 ;;
     --base) BASE="${2:-}"; shift 2 ;;
     --max-iterations) MAX_ITERATIONS="${2:-}"; shift 2 ;;
-    --poll-interval) POLL_INTERVAL="${2:-}"; shift 2 ;;
-    --poll-timeout) POLL_TIMEOUT="${2:-}"; shift 2 ;;
     --queue-glob) QUEUE_GLOB="${2:-}"; shift 2 ;;
     --state-root) STATE_ROOT="${2:-}"; shift 2 ;;
     --status-file) STATUS_FILE="${2:-}"; shift 2 ;;
@@ -610,67 +604,57 @@ mark_blocked_and_stop() {
   exit 1
 }
 
-gh_pr_view_state_merged_at() {
-  # Single gh call fetching both fields; prints state then mergedAt on two lines.
-  local pr_url="$1"
-  local json
-
-  if [ -n "$pr_url" ]; then
-    json="$("$GH_BIN" pr view "$pr_url" --json state,mergedAt)"
-  else
-    json="$("$GH_BIN" pr view --json state,mergedAt)"
-  fi
-
-  printf '%s' "$json" | "$PYTHON_BIN" -c '
-import json, sys
-try:
-    obj = json.load(sys.stdin)
-except Exception:
-    obj = {}
-print(obj.get("state") or "")
-merged = obj.get("mergedAt")
-print("" if merged is None else merged)
-'
-}
-
-poll_until_merged() {
+merge_pr() {
+  # Auto-merge the PR the ship stage opened. No human gate, no polling: squash
+  # the PR with admin override so branch protection / pending checks cannot block
+  # the loop, and delete the merged branch.
   local task="$1"
   local pr_url="$2"
-  local start
-  CURRENT_STAGE="poll-merge"
-  start="$(date +%s)"
+  CURRENT_STAGE="merge"
 
   if [ "$DRY_RUN" = "1" ]; then
-    write_status "dry_run" "poll-merge" "skipped" "dry-run would poll PR until merged" "$task" "$CURRENT_ITERATION" "$pr_url"
-    echo "DRY RUN: would poll PR until merged: ${pr_url:-current branch PR}"
+    write_status "dry_run" "merge" "skipped" "dry-run would squash-merge PR" "$task" "$CURRENT_ITERATION" "$pr_url"
+    echo "DRY RUN: would run gh pr merge ${pr_url:-current branch PR} --squash --admin --delete-branch"
     return 0
   fi
 
-  command -v "$GH_BIN" >/dev/null 2>&1 || mark_blocked_and_stop "$task" "gh is required to poll PR merge state"
-  write_status "waiting" "poll-merge" "waiting" "waiting for human merge; url=${pr_url:-unknown}" "$task" "$CURRENT_ITERATION" "$pr_url"
+  command -v "$GH_BIN" >/dev/null 2>&1 || mark_blocked_and_stop "$task" "gh is required to merge the PR"
+  [ -n "$pr_url" ] || mark_blocked_and_stop "$task" "merge_pr requires a pr_url"
+  write_status "running" "merge" "running" "squash-merging PR; url=$pr_url" "$task" "$CURRENT_ITERATION" "$pr_url"
 
+  # Bounded retry mirroring retry_with_backoff: RETRY_COUNT retries on top of the
+  # first attempt, seeded by RETRY_INITIAL_SECONDS and doubling each retry. A
+  # non-zero `gh pr merge` whose PR is nonetheless MERGED (e.g. the squash merged
+  # but the --delete-branch cleanup failed because the head branch was already
+  # auto-deleted or is protected) is treated as success, not a block.
+  local retry_number rc delay pr_state
+  retry_number=0
   while true; do
-    local state merged_at now elapsed pr_fields
-    pr_fields="$(gh_pr_view_state_merged_at "$pr_url" 2>/dev/null || true)"
-    state="$(printf '%s\n' "$pr_fields" | sed -n '1p')"
-    merged_at="$(printf '%s\n' "$pr_fields" | sed -n '2p')"
-    if [ "$state" = "MERGED" ] || { [ -n "$merged_at" ] && [ "$merged_at" != "null" ]; }; then
-      log "PR merged: ${pr_url:-current branch PR}"
-      write_status "running" "poll-merge" "completed" "PR merged: ${pr_url:-current branch PR}" "$task" "$CURRENT_ITERATION" "$pr_url"
-      return 0
+    rc=0
+    "$GH_BIN" pr merge "$pr_url" --squash --admin --delete-branch || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      break
     fi
-    if [ "$state" = "CLOSED" ]; then
-      mark_blocked_and_stop "$task" "PR was closed without merge"
+
+    pr_state="$("$GH_BIN" pr view "$pr_url" --json state -q .state 2>/dev/null || true)"
+    if [ "$pr_state" = "MERGED" ]; then
+      log "PR merged but post-merge branch cleanup failed; continuing"
+      break
     fi
-    now="$(date +%s)"
-    elapsed=$((now - start))
-    if [ "$POLL_TIMEOUT" != "0" ] && [ "$elapsed" -ge "$POLL_TIMEOUT" ]; then
-      mark_blocked_and_stop "$task" "timed out waiting for PR merge after ${POLL_TIMEOUT}s"
+
+    if [ "$retry_number" -ge "$RETRY_COUNT" ]; then
+      mark_blocked_and_stop "$task" "failed to squash-merge PR $pr_url after $RETRY_COUNT attempts (gh pr merge --squash --admin --delete-branch failed)"
     fi
-    log "waiting for human merge; state=${state:-unknown}; url=${pr_url:-unknown}"
-    write_status "waiting" "poll-merge" "waiting" "waiting for human merge; state=${state:-unknown}; url=${pr_url:-unknown}" "$task" "$CURRENT_ITERATION" "$pr_url"
-    sleep "$POLL_INTERVAL"
+
+    retry_number=$((retry_number + 1))
+    delay="$(retry_delay_for_attempt "$retry_number")"
+    log "merge failed with exit $rc; retry $retry_number/$RETRY_COUNT in ${delay}s"
+    write_status "running" "merge" "retrying" "merge failed with exit $rc; retry $retry_number/$RETRY_COUNT in ${delay}s" "$task" "$CURRENT_ITERATION" "$pr_url"
+    sleep "$delay"
   done
+
+  log "PR merged: $pr_url"
+  write_status "running" "merge" "completed" "PR merged: $pr_url" "$task" "$CURRENT_ITERATION" "$pr_url"
 }
 
 git_operation_in_progress() {
@@ -976,7 +960,7 @@ run_iteration() {
   write_status "running" "claim" "running" "claiming task: $(task_title "$task")" "$task" "$iteration"
   if [ "$DRY_RUN" = "1" ]; then
     echo "DRY RUN: next task $task"
-    echo "DRY RUN: would run plan -> implement -> deep-review -> conditional remediation -> review -> qa -> conditional investigate -> deep-review -> conditional remediation -> ship -> poll merge -> sync base"
+    echo "DRY RUN: would run plan -> implement -> deep-review -> conditional remediation -> review -> qa -> conditional investigate -> deep-review -> conditional remediation -> ship -> merge -> sync base"
     write_status "dry_run" "dry-run" "completed" "dry-run printed planned sessions for $(task_title "$task")" "$task" "$iteration"
     return 0
   fi
@@ -1028,7 +1012,7 @@ run_iteration() {
     CURRENT_STAGE="10-ship"
     mark_blocked_and_stop "$task" "ship stage returned no pr_url"
   fi
-  poll_until_merged "$task" "$pr_url"
+  merge_pr "$task" "$pr_url"
   sync_base_after_merge "$task"
 
   retry_with_backoff "done task status update" set_frontmatter_value "$task" status "done" || mark_blocked_and_stop "$task" "failed to mark task as done after $RETRY_COUNT retries"

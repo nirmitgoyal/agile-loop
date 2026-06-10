@@ -4,7 +4,11 @@
 
 Agile Loop runs a queued engineering loop for agent-assisted repos:
 GStack spec -> GSD phase -> Superpowers plan -> implementation -> review/QA ->
-ship -> human merge.
+ship -> auto-merge. Each task's PR is squash-merged automatically (with admin
+override) and the base branch is fast-forwarded before the next task starts —
+no human merge gate. The merge retries on transient failure; only a PR that is
+genuinely not merged blocks the loop — a failed post-merge branch cleanup does
+not.
 
 Two adapters drive the same contract:
 
@@ -77,7 +81,7 @@ Invoke the skill against the current repo:
 Live run:
 
 ```
-/agile-loop --repo . --base main --max-iterations 10 --poll-interval 60
+/agile-loop --repo . --base main --max-iterations 10
 ```
 
 Claude reads the queue, claims the next `todo` task, and drives the loop
@@ -103,7 +107,6 @@ Live run:
   --repo /path/to/your/repo \
   --base main \
   --max-iterations 10 \
-  --poll-interval 60 \
   --unsafe-bypass-approvals
 ```
 
