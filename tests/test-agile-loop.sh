@@ -750,4 +750,73 @@ fi
 assert_json_value "$repo_space/.agile-loop/status.json" status completed
 assert_all_fresh_sessions "$repo_space/codex.log"
 
+# --- Dashboard auto-start ---
+
+# Pick a non-default port so this test never collides with a real dashboard the
+# user may be running. Use python to grab a free port and immediately release it.
+dashboard_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+dashboard_repo="$TMP_ROOT/dashboard-repo"
+make_repo "$dashboard_repo"
+
+cleanup_dashboard() {
+  local pids
+  pids="$(lsof -ti tcp:"$dashboard_port" -sTCP:LISTEN 2>/dev/null || true)"
+  if [ -n "$pids" ]; then
+    # shellcheck disable=SC2086
+    kill $pids >/dev/null 2>&1 || true
+  fi
+}
+trap 'rm -rf "$TMP_ROOT"; cleanup_dashboard' EXIT
+
+# --dry-run avoids spawning the fake codex but exercises pre-flight (including
+# ensure_dashboard).
+"$RUNNER" --repo "$dashboard_repo" --dry-run --dashboard-port "$dashboard_port" \
+  > "$dashboard_repo/dashboard-run.out" 2>&1
+
+# Give the spawned dashboard a moment to bind.
+for _ in 1 2 3 4 5; do
+  if curl -fsS --max-time 2 "http://127.0.0.1:$dashboard_port/api/status" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.5
+done
+
+dashboard_repo_real="$(cd "$dashboard_repo" && pwd -P)"
+served_repo="$(curl -fsS --max-time 2 "http://127.0.0.1:$dashboard_port/api/status" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("repo",""))')"
+if [ "$served_repo" != "$dashboard_repo_real" ]; then
+  cat "$dashboard_repo/dashboard-run.out" >&2
+  echo "Dashboard auto-start did not bind to $dashboard_repo_real (got: $served_repo)" >&2
+  exit 1
+fi
+
+# Re-run should reuse, not respawn — assert by checking the log line and that
+# the listener PID does not change.
+prior_pid="$(lsof -ti tcp:"$dashboard_port" -sTCP:LISTEN 2>/dev/null | head -1)"
+"$RUNNER" --repo "$dashboard_repo" --dry-run --dashboard-port "$dashboard_port" \
+  > "$dashboard_repo/dashboard-reuse.out" 2>&1
+if ! grep -q "dashboard already serving" "$dashboard_repo/dashboard-reuse.out"; then
+  cat "$dashboard_repo/dashboard-reuse.out" >&2
+  echo "Expected re-run to reuse the existing dashboard" >&2
+  exit 1
+fi
+current_pid="$(lsof -ti tcp:"$dashboard_port" -sTCP:LISTEN 2>/dev/null | head -1)"
+if [ "$prior_pid" != "$current_pid" ]; then
+  echo "Dashboard PID changed on re-run ($prior_pid -> $current_pid); should have been reused" >&2
+  exit 1
+fi
+
+# --no-dashboard must skip the auto-start (and never bind a port).
+nodash_repo="$TMP_ROOT/dashboard-skip-repo"
+make_repo "$nodash_repo"
+"$RUNNER" --repo "$nodash_repo" --dry-run --no-dashboard \
+  > "$nodash_repo/nodash.out" 2>&1
+if ! grep -q "dashboard auto-start disabled" "$nodash_repo/nodash.out"; then
+  cat "$nodash_repo/nodash.out" >&2
+  echo "Expected --no-dashboard to log the disabled message" >&2
+  exit 1
+fi
+
+cleanup_dashboard
+
 echo "agile-loop runner tests passed"

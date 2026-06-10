@@ -115,7 +115,17 @@ You can set `AGILE_LOOP_UNSAFE_BYPASS=1` instead of passing
 
 ## Dashboard
 
-The dashboard works for both adapters:
+Both adapters auto-start the dashboard during pre-flight, so every run of
+the skill leaves `http://127.0.0.1:8765` pointed at the active repo. If a
+dashboard is already serving the same repo it is reused; if a stale one is
+serving a different repo it is reclaimed.
+
+To override the bind, pass `--dashboard-host` / `--dashboard-port` (or set
+`AGILE_LOOP_DASHBOARD_HOST` / `AGILE_LOOP_DASHBOARD_PORT`). To opt out and
+manage the dashboard yourself, pass `--no-dashboard` (or
+`AGILE_LOOP_NO_DASHBOARD=1`).
+
+You can also start it manually:
 
 ```bash
 ~/.codex/skills/agile-loop/scripts/agile-dashboard.py \
