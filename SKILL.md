@@ -106,6 +106,11 @@ Spawn each step's child with the `--model` and effort from **Model and effort ro
 - 3 exponential-backoff retries (5s, 10s, 20s) on: child non-zero exit, empty stdout, JSON-contract stages missing the final JSON line, transient parse errors. Update status with `stage_status: retrying` between attempts.
 - Do NOT retry on: explicit `BLOCKED` or `NEEDS_CONTEXT` in the child output, or `blocked: true` in a JSON-contract stage's final line. Stop immediately: write `status: blocked` with the child's reason, flip the task file frontmatter back to `status: blocked` (writing the reason into the task file body as a `## Blocked` section), and exit the loop.
 - For non-JSON stages, the final `STATUS:` line drives branching. `DONE` and `DONE_WITH_CONCERNS` continue; `BLOCKED` and `NEEDS_CONTEXT` stop.
+- **Usage-limit auto-resume**: if a child exits non-zero and either stdout or the events log (`.agile-loop/runs/$RUN_ID/<stage>.events.log`) contains any of the strings `usage limit`, `rate limit`, or `overloaded` (case-insensitive), treat it as a time-gated pause — not a permanent failure and NOT counted against the 3-retry budget:
+  1. Write `status: waiting`, `stage_status: waiting`, `message: "Usage limit hit; will retry at HH:MM UTC"`.
+  2. Compute seconds until top of next UTC hour (add 30s buffer): `python3 -c "import time; t=time.time(); print(int(3600 - t % 3600 + 30))"`. Sleep that long via `Bash`.
+  3. After waking, write `status: running`, `stage_status: running`, then re-spawn the same stage from scratch (the child is stateless — full re-spawn is safe).
+  4. Repeat indefinitely on consecutive usage-limit hits. Only promote to a normal retry (against the 3-retry budget) when the failure is NOT a usage-limit string.
 
 ### 3. Auto-merge handling
 
