@@ -53,22 +53,22 @@ Three buckets. Implementation is the only version-pinned stage; every other stag
 
 "Latest Opus" is the `opus` model alias — the newest Opus release, which currently resolves to `claude-opus-4-8`. "Second-best Opus" has no alias, so pin it explicitly; it is currently `claude-opus-4-7`. When a newer Opus ships, the latest-Opus stages follow the `opus` alias automatically — you only bump the second-best pin.
 
-| Tier | How to pass it |
-| --- | --- |
-| Latest / best Opus | `--model opus` (currently `claude-opus-4-8`) |
-| Second-best Opus | `--model claude-opus-4-7` (bump on each new Opus release) |
+| Tier               | How to pass it                                            |
+| ------------------ | --------------------------------------------------------- |
+| Latest / best Opus | `--model opus` (currently `claude-opus-4-8`)              |
+| Second-best Opus   | `--model claude-opus-4-7` (bump on each new Opus release) |
 
 Per-stage routing (`<stage-model>` for each `claude -p` invocation):
 
-| Stage (`stage` value) | `--model` | `--effort` |
-| --- | --- | --- |
-| `plan` | `opus` (latest) | default — omit `--effort` |
-| `implement` | `claude-opus-4-7` (second-best) | `max` |
-| `deep-review` (pass 1 and 2) | `opus` (latest) | `max` |
-| `remediate-deep-review` | `opus` (latest) | default — omit `--effort` |
-| `qa` | `opus` (latest) | default — omit `--effort` |
-| `remediate-qa` | `opus` (latest) | default — omit `--effort` |
-| `ship` | `opus` (latest) | default — omit `--effort` |
+| Stage (`stage` value)        | `--model`                       | `--effort`                |
+| ---------------------------- | ------------------------------- | ------------------------- |
+| `plan`                       | `opus` (latest)                 | default — omit `--effort` |
+| `implement`                  | `claude-opus-4-7` (second-best) | `max`                     |
+| `deep-review` (pass 1 and 2) | `opus` (latest)                 | `max`                     |
+| `remediate-deep-review`      | `opus` (latest)                 | default — omit `--effort` |
+| `qa`                         | `opus` (latest)                 | default — omit `--effort` |
+| `remediate-qa`               | `opus` (latest)                 | default — omit `--effort` |
+| `ship`                       | `opus` (latest)                 | default — omit `--effort` |
 
 Only `implement` and `deep-review` pass `--effort max`; the rest omit `--effort` and run at the model's default effort.
 
@@ -311,7 +311,7 @@ Algorithm — run via `Bash` once, after the initial `status: starting` write an
 1. If `--no-dashboard` (or `AGILE_LOOP_NO_DASHBOARD=1`) is set: log "dashboard auto-start disabled" and skip. The user is on the hook for running their own.
 2. Probe the URL: `curl -fsS --max-time 2 http://<host>:<port>/api/status`. Parse the JSON `repo` field.
    - If it equals the current `--repo` (resolved absolute path): log "dashboard already serving <repo>" and skip — idempotent reuse, do not respawn.
-   - If it returns a *different* repo: a stale dashboard from a prior run is squatting on the port. Reclaim it: find the listener with `lsof -ti tcp:<port> -sTCP:LISTEN`, `kill` then `kill -9` after a 1s grace, then proceed to step 3. Log the reclamation so the user knows.
+   - If it returns a _different_ repo: a stale dashboard from a prior run is squatting on the port. Reclaim it: find the listener with `lsof -ti tcp:<port> -sTCP:LISTEN`, `kill` then `kill -9` after a 1s grace, then proceed to step 3. Log the reclamation so the user knows.
    - If the probe fails (connection refused / timeout): proceed to step 3.
 3. Spawn the dashboard detached so it outlives the loop run:
 
@@ -328,6 +328,7 @@ Algorithm — run via `Bash` once, after the initial `status: starting` write an
    ```
 
    Use `nohup` (or a detached subshell + `disown`) so the dashboard process is NOT a child of the current Bash invocation — when the loop completes, the dashboard keeps running so the user can still see the final state.
+
 4. Wait ~1s, then re-probe `/api/status` once to confirm the spawn succeeded. If still unreachable, write a non-blocking warning to the log (`dashboard did not respond at <url> within 1s; check <log>`) and continue — a missing dashboard is annoying but not blocking.
 
 Never edit `scripts/agile-dashboard.py` to "show" tasks differently — it reads disk on every poll. Keeping the dashboard current means keeping `.agile-loop/status.json` and `docs/agile-loop/tasks/*.md` current.
@@ -336,6 +337,7 @@ The Codex adapter (`scripts/agile-loop.sh::ensure_dashboard`) implements the sam
 
 ## Guardrails (non-negotiable)
 
+- **Notification policy: only notify on failure.** Do NOT send user-visible push notifications (e.g. via the `PushNotification` tool) on routine stage transitions, retries, task claims, successful merges, or queue-empty completion. Only notify when the loop enters a terminal `status: blocked` state (failed merge, failed fast-forward, child reported `BLOCKED` / `NEEDS_CONTEXT`, exhausted retries on a non-usage-limit error, or any other condition that stops the loop without progress). Status writes to `.agile-loop/status.json` and the dashboard are NOT notifications — keep updating them on every stage as before. Usage-limit pauses (`status: waiting`) are not failures — do not notify on those either.
 - One PR per queued task.
 - Stop instead of guessing on: `BLOCKED`, `NEEDS_CONTEXT`, failed tests, mandatory user judgment, missing authentication, or a failed auto-merge.
 - Delegate review and QA fixes only after findings exist (no preemptive cleanup).
@@ -358,12 +360,15 @@ phase: optional-gsd-phase-id
 ---
 
 ## Objective
+
 What to build.
 
 ## Inputs
+
 Links to GSD phase docs, plans, screenshots, issues, or acceptance notes.
 
 ## Done
+
 Concrete acceptance criteria.
 ```
 
