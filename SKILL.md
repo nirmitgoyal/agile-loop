@@ -18,27 +18,28 @@ When you spawn a child via `claude -p "<prompt>"`, that is the Claude-side equiv
 
 ## Pre-flight
 
-1. Parse args (all optional): `--repo PATH` (default `$PWD`), `--base BRANCH` (default `main`), `--max-iterations N` (default 10), `--unsafe-bypass-approvals` (boolean), `--dry-run` (boolean), `--dashboard-host HOST` (default `127.0.0.1`, env `AGILE_LOOP_DASHBOARD_HOST`), `--dashboard-port N` (default `8765`, env `AGILE_LOOP_DASHBOARD_PORT`), `--no-dashboard` (boolean, env `AGILE_LOOP_NO_DASHBOARD=1`). `cd` into the resolved repo root.
+1. Parse args (all optional): `--repo PATH` (default `$PWD`), `--base BRANCH` (default `main`), `--max-iterations N` (default 10), `--unsafe-bypass-approvals` (boolean), `--dry-run` (boolean), `--dashboard-host HOST` (default `127.0.0.1`, env `AGILE_LOOP_DASHBOARD_HOST`), `--dashboard-port N` (default `8765`, env `AGILE_LOOP_DASHBOARD_PORT`), `--no-dashboard` (boolean, env `AGILE_LOOP_NO_DASHBOARD=1`). `cd` into the resolved repo root and remember it as the absolute `REPO`.
 2. Resolve approval bypass: live runs require either `--unsafe-bypass-approvals` or `AGILE_LOOP_UNSAFE_BYPASS=1` in the environment. If neither is set and `--dry-run` is also not set, stop with a clear blocked message — the Codex adapter has the same gate (`scripts/agile-loop.sh`).
 3. Confirm `git`, `gh`, `claude`, and `python3` are on `PATH`. If any are missing, write a blocked status with a clear message and stop.
-4. Create `.agile-loop/` and `.agile-loop/runs/<RUN_ID>/` if missing. Generate a `RUN_ID` (UTC timestamp + short random).
+4. Generate a `RUN_ID` (UTC timestamp + short random). Create `.agile-loop/` and `.agile-loop/runs/<RUN_ID>/` if missing. Remember these absolute paths for the whole run: `RUN_DIR=$REPO/.agile-loop/runs/$RUN_ID` and `WORKTREES=$REPO/.claude/worktrees`. **`.agile-loop/`, `.agile-loop/status.json`, and `docs/agile-loop/tasks/*.md` always live in the main repo** (never inside a worktree) so the dashboard keeps reading them and they survive worktree teardown. Each claimed task runs in its own Claude worktree under `WORKTREES` (see **Per-iteration loop → 1. Pick the next task**). `.claude/worktrees/` lives inside the repo, but git treats a registered worktree path as a nested worktree — it does not appear as untracked in the main repo — so no `.gitignore` change is needed.
 5. Initialize `.agile-loop/status.json` with `status: starting` via the status writer (see **Status writer** below).
 6. **Auto-start the dashboard** so `http://<dashboard-host>:<dashboard-port>` (default `http://127.0.0.1:8765`) always reflects the active loop. See **Dashboard auto-start** below for the exact behavior. Skip this step entirely when `--no-dashboard` / `AGILE_LOOP_NO_DASHBOARD=1` is set.
 7. Print a one-line summary to the user: `Agile Loop: repo=<repo> base=<base> max=<n> dry_run=<bool> run=<RUN_ID> dashboard=<url|skipped>`.
 
 ## Child-session invocation
 
-For every agent-backed step, spawn one fresh child via `Bash`:
+For every agent-backed step, spawn one fresh child via `Bash`, with its working directory set to the current task's worktree (`$WORKTREE`, created during claim):
 
 ```bash
-claude -p "$(cat .agile-loop/runs/$RUN_ID/<stage>.prompt.md)" \
+( cd "$WORKTREE" && claude -p "$(cat "$RUN_DIR/<stage>.prompt.md")" \
   --model <stage-model> \
   --output-format text \
   --dangerously-skip-permissions \
-  > .agile-loop/runs/$RUN_ID/<stage>.output.md \
-  2> .agile-loop/runs/$RUN_ID/<stage>.events.log
+  > "$RUN_DIR/<stage>.output.md" \
+  2> "$RUN_DIR/<stage>.events.log" )
 ```
 
+- The child runs **inside the task's Claude worktree** (`cd "$WORKTREE"`), so all of its file edits and commits land on the task branch and never touch the main checkout. The prompt `cat`, stdout `>`, and stderr `2>` all use **absolute** `$RUN_DIR` paths, so run artifacts stay in the main repo even though cwd is the worktree.
 - `--dangerously-skip-permissions` is required so the child can write files and run shell commands without prompting. Only pass it when the parent loop is gated by `--unsafe-bypass-approvals` / `AGILE_LOOP_UNSAFE_BYPASS=1`. In `--dry-run` mode, do not spawn the child at all — log "DRY RUN: would run stage=<stage>".
 - `--model <stage-model>` is mandatory on **every** stage — never let a stage silently inherit an ambient default model. The implementation and code-review stages additionally pass `--effort max`; every other stage runs at default effort (omit `--effort`). Resolve both from the stage's row in **Model and effort routing** below and pass them explicitly on each `claude -p` call.
 - Build each prompt file first using the inline templates in **Prompt templates**.
@@ -83,6 +84,10 @@ For up to `--max-iterations` iterations, or until the queue is empty:
 - `Glob docs/agile-loop/tasks/*.md` sorted lexically.
 - Read each file's YAML frontmatter. Pick the first with `status: todo`. If none, write `status: idle` and stop with a one-line summary.
 - Edit the chosen task file's frontmatter to `status: doing`. Write status.json with `stage: claim`, `stage_status: running`, the task path in `task_file`, and the current iteration number. In `--dry-run`, do not mutate the task file; just log "would claim <task>".
+- **Create the task's Claude worktree** (still under `stage: claim`; this git op runs in the main repo). Derive a `slug` from the task-file stem: lowercase it, replace every `[^a-z0-9-]` with `-`, collapse repeats, and trim leading/trailing `-`. Set `WORKTREE=$WORKTREES/agile-loop-<slug>` and `BRANCH=claude/agile-loop-<slug>`, then `mkdir -p "$WORKTREES"` and `git worktree add -b "$BRANCH" "$WORKTREE" "<base>"`. Every agent stage for this task runs with cwd `$WORKTREE` (see **Child-session invocation**).
+  - **Resume / collision:** if `$WORKTREE` already exists and is checked out on `$BRANCH` (e.g. a task set back to `todo` after a prior block), reuse it; recreate only if it is missing or corrupt (`git worktree remove "$WORKTREE" --force`, then re-add). If a _different_ worktree or branch already squats the name, append a short `$RUN_ID` suffix to both `WORKTREE` and `BRANCH` so the pair is unique.
+  - All task-frontmatter edits (`doing` / `done` / `blocked`) happen on the **main-repo** task file, never the worktree copy — so task-status churn never enters the PR diff and the dashboard queue glob stays accurate. No child stage edits the task frontmatter; only the orchestrator does.
+  - In `--dry-run`, create nothing; log `DRY RUN: would create worktree $WORKTREE on branch $BRANCH`.
 
 ### 2. Run the 10-step loop contract
 
@@ -99,12 +104,12 @@ The steps (identical contract to `scripts/agile-loop.sh`):
 9. **Ship** — `Ship Session` template. Parse the final JSON line `{"blocked","pr_url","summary"}`. Capture `pr_url`.
 10. **Auto-merge** — the loop merges the PR itself; see **Auto-merge handling** below. Do not wait for a human.
 
-Spawn each step's child with the `--model` and effort from **Model and effort routing**: implementation on the second-best Opus at `--effort max`, deep-review on the latest Opus at `--effort max`, and every other stage on the latest Opus at default effort. Update status.json before and after each step. Use `stage` values `plan`, `implement`, `deep-review`, `remediate-deep-review`, `qa`, `remediate-qa`, `ship`.
+Spawn each step's child with the `--model` and effort from **Model and effort routing**: implementation on the second-best Opus at `--effort max`, deep-review on the latest Opus at `--effort max`, and every other stage on the latest Opus at default effort. Update status.json before and after each step. Use `stage` values `plan`, `implement`, `deep-review`, `remediate-deep-review`, `qa`, `remediate-qa`, `ship`. Every one of these stages spawns with cwd set to the task's worktree (`$WORKTREE`); prompt files, stage outputs, and `status.json` stay in the main repo via `$RUN_DIR`.
 
 ### Retry policy per agent-backed step
 
 - 3 exponential-backoff retries (5s, 10s, 20s) on: child non-zero exit, empty stdout, JSON-contract stages missing the final JSON line, transient parse errors. Update status with `stage_status: retrying` between attempts.
-- Do NOT retry on: explicit `BLOCKED` or `NEEDS_CONTEXT` in the child output, or `blocked: true` in a JSON-contract stage's final line. Stop immediately: write `status: blocked` with the child's reason, flip the task file frontmatter back to `status: blocked` (writing the reason into the task file body as a `## Blocked` section), and exit the loop.
+- Do NOT retry on: explicit `BLOCKED` or `NEEDS_CONTEXT` in the child output, or `blocked: true` in a JSON-contract stage's final line. Stop immediately: write `status: blocked` with the child's reason, flip the task file frontmatter back to `status: blocked` (writing the reason into the task file body as a `## Blocked` section), and exit the loop. **Leave the task worktree in place** for inspection — do not remove it on a block. Include `Worktree: $WORKTREE (branch $BRANCH)` in the `status: blocked` `message` and in the task's `## Blocked` section so a human can `cd` in; the next run reuses it (see **Pick the next task**). This leave-in-place rule applies to every terminal block below (failed merge, failed fast-forward, exhausted retries), not just child-reported blocks.
 - For non-JSON stages, the final `STATUS:` line drives branching. `DONE` and `DONE_WITH_CONCERNS` continue; `BLOCKED` and `NEEDS_CONTEXT` stop.
 - **Usage-limit auto-resume**: if a child exits non-zero and either stdout or the events log (`.agile-loop/runs/$RUN_ID/<stage>.events.log`) contains any of the strings `usage limit`, `rate limit`, or `overloaded` (case-insensitive), treat it as a time-gated pause — not a permanent failure and NOT counted against the 3-retry budget:
   1. Write `status: waiting`, `stage_status: waiting`, `message: "Usage limit hit; will retry at HH:MM UTC"`.
@@ -114,19 +119,22 @@ Spawn each step's child with the `--model` and effort from **Model and effort ro
 
 ### 3. Auto-merge handling
 
-After step 9 writes `pr_url`, the loop merges the PR itself — there is no human merge gate and no polling:
+The ship stage (step 9) runs in the task worktree on `$BRANCH`, so `/ship` pushes that branch and opens the PR against `<base>` — nothing extra is needed. After step 9 writes `pr_url`, the loop merges the PR itself (back in the main repo) — there is no human merge gate and no polling:
 
 1. Write `status: running`, `stage: merge`. Squash-merge the PR with admin override and branch cleanup: `gh pr merge <pr_url> --squash --admin --delete-branch`. `--admin` forces past branch protection / required checks so the loop never blocks waiting on a reviewer or CI gate. Retry the merge on transient failure with the same budget as every other step (3 attempts, exponential backoff 5s, 10s, 20s — see **Retry policy per agent-backed step**). If `gh pr merge` exits non-zero, do not block immediately: re-check the PR's real state with `gh pr view <pr_url> --json state`. If `state` is `MERGED`, treat it as success and continue — this is common when the repo auto-deletes head branches, so `--delete-branch` errors on an already-gone branch; only log a warning that the branch cleanup failed. Set `status: blocked` (reason e.g. "failed to squash-merge PR <pr_url>") and stop ONLY if the PR is genuinely not `MERGED` after retries are exhausted. In `--dry-run`, do not merge; log "DRY RUN: would run gh pr merge <pr_url> --squash --admin --delete-branch".
-2. Sync the base branch. Write `stage: sync-base`, then:
+2. Tear down the task worktree, then sync the base branch. Write `stage: sync-base`, then run these in the main repo (`$REPO`):
+   - **Remove the worktree first**: `git worktree remove "$WORKTREE" --force`. This must precede the local-branch delete because `$BRANCH` is checked out in the worktree and cannot be deleted while it exists — which is also why `gh pr merge --delete-branch` could only ever remove the _remote_ head, not the local branch.
+   - Delete the now-free local branch: `git branch -D "$BRANCH"`. Then `git worktree prune`. These three teardown commands are **non-blocking** — on failure, log a warning and continue (same stance as the branch-cleanup-failure case above).
    - `git fetch origin <base>`.
    - `git checkout <base>` (or `git switch <base>`).
    - Fast-forward only: `git merge --ff-only refs/remotes/origin/<base>`. If the fast-forward fails, set `status: blocked` with reason "base branch <base> diverged from origin; cannot fast-forward" and stop. **Do not rebase or force-update.**
+   - In `--dry-run`, do not remove anything; log `DRY RUN: would remove worktree $WORKTREE`.
 3. Edit the task file's frontmatter to `status: done`. Write status.json with `stage: complete`, `stage_status: completed`.
 4. If iterations remain and the queue has more `todo` tasks, continue to the next iteration. Otherwise stop with `status: idle`.
 
 ## Prompt templates
 
-Write the assembled template to `.agile-loop/runs/$RUN_ID/<stage>.prompt.md` before invoking `claude -p`. Each template ends with the same `Session isolation:` block and the exit contract (a final `STATUS:` line or a final JSON line, depending on the stage). Substitute `{repo}` with the absolute repo path, `{base}` with the base branch, `{task_file}` with the task file path, and the remediation-specific keys (`{pass}`, `{review_output}`, `{qa_output}`, `{max_parallel_remediation}` — default `6`).
+Write the assembled template to `.agile-loop/runs/$RUN_ID/<stage>.prompt.md` before invoking `claude -p`. Each template ends with the same `Session isolation:` block and the exit contract (a final `STATUS:` line or a final JSON line, depending on the stage). Substitute `{repo}` with the absolute repo path, `{workdir}` with the absolute path to the task's Claude worktree (the working directory every stage runs in), `{base}` with the base branch, `{task_file}` with the task file path (the main-repo copy — read-only context), and the remediation-specific keys (`{pass}`, `{review_output}`, `{qa_output}`, `{max_parallel_remediation}` — default `6`).
 
 The shared `Session isolation:` block (appended to every template):
 
@@ -141,6 +149,7 @@ This is a fresh agent session for exactly this Agile Loop stage. Reconstruct all
 You are running agile-loop stage: plan.
 
 Repository: {repo}
+Working directory: {workdir} (this is a git worktree — do all work here; do not cd elsewhere)
 Base branch: {base}
 Task file: {task_file}
 
@@ -159,6 +168,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 You are running agile-loop stage: implement.
 
 Repository: {repo}
+Working directory: {workdir} (this is a git worktree — do all work here; do not cd elsewhere)
 Base branch: {base}
 Task file: {task_file}
 
@@ -186,6 +196,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 You are running agile-loop stage: deep review pass {pass}.
 
 Repository: {repo}
+Working directory: {workdir} (this is a git worktree — do all work here; do not cd elsewhere)
 Base branch: {base}
 Task file: {task_file}
 
@@ -208,6 +219,7 @@ Summarize issues by severity. The final line of your response must be exactly on
 You are running agile-loop stage: remediate deep review.
 
 Repository: {repo}
+Working directory: {workdir} (this is a git worktree — do all work here; do not cd elsewhere)
 Base branch: {base}
 Task file: {task_file}
 Review output file: {review_output}
@@ -227,6 +239,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 You are running agile-loop stage: qa-only full.
 
 Repository: {repo}
+Working directory: {workdir} (this is a git worktree — do all work here; do not cd elsewhere)
 Base branch: {base}
 Task file: {task_file}
 
@@ -244,6 +257,7 @@ The final line of your response must be exactly one JSON object:
 You are running agile-loop stage: remediate qa.
 
 Repository: {repo}
+Working directory: {workdir} (this is a git worktree — do all work here; do not cd elsewhere)
 Base branch: {base}
 Task file: {task_file}
 QA output file: {qa_output}
@@ -263,6 +277,7 @@ STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 You are running agile-loop stage: ship.
 
 Repository: {repo}
+Working directory: {workdir} (this is a git worktree — do all work here; do not cd elsewhere)
 Base branch: {base}
 Task file: {task_file}
 
@@ -339,13 +354,15 @@ The Codex adapter (`scripts/agile-loop.sh::ensure_dashboard`) implements the sam
 
 - **Notification policy: only notify on failure.** Do NOT send user-visible push notifications (e.g. via the `PushNotification` tool) on routine stage transitions, retries, task claims, successful merges, or queue-empty completion. Only notify when the loop enters a terminal `status: blocked` state (failed merge, failed fast-forward, child reported `BLOCKED` / `NEEDS_CONTEXT`, exhausted retries on a non-usage-limit error, or any other condition that stops the loop without progress). Status writes to `.agile-loop/status.json` and the dashboard are NOT notifications — keep updating them on every stage as before. Usage-limit pauses (`status: waiting`) are not failures — do not notify on those either.
 - One PR per queued task.
+- **Per-task worktree isolation.** Each task runs in its own Claude worktree (`.claude/worktrees/agile-loop-<slug>` on branch `claude/agile-loop-<slug>`); every agent stage runs inside it and never in the main checkout. Orchestration (status.json, task-frontmatter edits, `gh` merge, base sync) stays in the main repo. Only the orchestrator edits task frontmatter, and only the main-repo copy — no child stage touches it.
+- **Worktree teardown only after a successful merge.** Remove the worktree before deleting its local branch (the branch is checked out in the worktree). Teardown (`git worktree remove` / `git branch -D` / `git worktree prune`) is non-blocking — warn and continue on failure. On any terminal block, leave the worktree in place for inspection and record its path in the status `message` and the task's `## Blocked` section.
 - Stop instead of guessing on: `BLOCKED`, `NEEDS_CONTEXT`, failed tests, mandatory user judgment, missing authentication, or a failed auto-merge.
 - Delegate review and QA fixes only after findings exist (no preemptive cleanup).
 - Keep remediation scoped to the finding source. Do not broaden into cleanup.
 - Prefer repo guidance from `AGENTS.md` when present in the target repo.
 - Auto-merge each task's PR (`gh pr merge --squash --admin --delete-branch`) — do not wait for a human and do not poll. Retry the merge on transient failure, then re-check the PR's real state: a PR that is genuinely not `MERGED` after retries are exhausted blocks the loop, but a successful merge whose branch cleanup failed (e.g. the head branch was already auto-deleted) does NOT block — just warn and continue. The loop proceeds once the PR is merged and the base branch is synced.
 - Do not mark a task `done` until the PR is merged and the configured base branch has successfully fast-forwarded to `origin/<base>`. Do not use a post-merge rebase to replay local base-branch commits.
-- `--dry-run` prints what would happen and writes `status: dry_run` / `stage_status: skipped` for each stage. Do not spawn child sessions, do not mutate task files, do not run `git fetch` or `gh` write operations.
+- `--dry-run` prints what would happen and writes `status: dry_run` / `stage_status: skipped` for each stage. Do not spawn child sessions, do not mutate task files, do not run `git fetch` or `gh` write operations, and do not run `git worktree add/remove` or `git branch -D` — log the intended worktree actions only.
 - Live runs must be opted into with `--unsafe-bypass-approvals` (or `AGILE_LOOP_UNSAFE_BYPASS=1`); otherwise refuse to spawn child sessions.
 
 ## Queue format
