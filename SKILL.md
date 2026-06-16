@@ -46,34 +46,33 @@ For every agent-backed step, spawn one fresh child via `Bash`, with its working 
 
 ## Model and effort routing
 
-Three buckets. Implementation is the only version-pinned stage; every other stage just rides the latest Opus.
+All stages use latest Opus. Implementation and code-review passes additionally run at `--effort max`.
 
-- **Implementation → second-best Opus, `--effort max`.** Pin it one rung below the latest release, so the best model is the one reviewing what the second-best model wrote.
-- **Code review (both deep-review passes) → latest Opus, `--effort max`.** The best Opus, at full effort, judges the diff.
+- **Implementation → latest Opus, `--effort max`.** Full power at implementation time.
+- **Code review (both deep-review passes) → latest Opus, `--effort max`.** Full effort review.
 - **Every other stage (plan, deep-review/QA remediation, QA, ship) → latest Opus, default effort.** No special routing — just the latest Opus model, at its default effort.
 
-"Latest Opus" is the `opus` model alias — the newest Opus release, which currently resolves to `claude-opus-4-8`. "Second-best Opus" has no alias, so pin it explicitly; it is currently `claude-opus-4-7`. When a newer Opus ships, the latest-Opus stages follow the `opus` alias automatically — you only bump the second-best pin.
+"Latest Opus" is the `opus` model alias — the newest Opus release, which currently resolves to `claude-opus-4-8`. When a newer Opus ships, all stages follow the alias automatically.
 
-| Tier               | How to pass it                                            |
-| ------------------ | --------------------------------------------------------- |
-| Latest / best Opus | `--model opus` (currently `claude-opus-4-8`)              |
-| Second-best Opus   | `--model claude-opus-4-7` (bump on each new Opus release) |
+| Tier        | How to pass it                               |
+| ----------- | -------------------------------------------- |
+| Latest Opus | `--model opus` (currently `claude-opus-4-8`) |
 
 Per-stage routing (`<stage-model>` for each `claude -p` invocation):
 
-| Stage (`stage` value)        | `--model`                       | `--effort`                |
-| ---------------------------- | ------------------------------- | ------------------------- |
-| `plan`                       | `opus` (latest)                 | default — omit `--effort` |
-| `implement`                  | `claude-opus-4-7` (second-best) | `max`                     |
-| `deep-review` (pass 1 and 2) | `opus` (latest)                 | `max`                     |
-| `remediate-deep-review`      | `opus` (latest)                 | default — omit `--effort` |
-| `qa`                         | `opus` (latest)                 | default — omit `--effort` |
-| `remediate-qa`               | `opus` (latest)                 | default — omit `--effort` |
-| `ship`                       | `opus` (latest)                 | default — omit `--effort` |
+| Stage (`stage` value)        | `--model`       | `--effort`                |
+| ---------------------------- | --------------- | ------------------------- |
+| `plan`                       | `opus` (latest) | default — omit `--effort` |
+| `implement`                  | `opus` (latest) | `max`                     |
+| `deep-review` (pass 1 and 2) | `opus` (latest) | `max`                     |
+| `remediate-deep-review`      | `opus` (latest) | default — omit `--effort` |
+| `qa`                         | `opus` (latest) | default — omit `--effort` |
+| `remediate-qa`               | `opus` (latest) | default — omit `--effort` |
+| `ship`                       | `opus` (latest) | default — omit `--effort` |
 
 Only `implement` and `deep-review` pass `--effort max`; the rest omit `--effort` and run at the model's default effort.
 
-The Codex adapter (`scripts/agile-loop.sh`) mirrors the model split: implementation on the second-best model (`--implementation-model`), every other stage on the best/latest model (`--default-model` / `--review-model`).
+The Codex adapter (`scripts/agile-loop.sh`) passes `--default-model` / `--implementation-model` / `--review-model` for equivalent routing.
 
 ## Per-iteration loop
 
