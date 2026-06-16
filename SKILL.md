@@ -41,36 +41,41 @@ For every agent-backed step, spawn one fresh child via `Bash`, with its working 
 
 - The child runs **inside the task's Claude worktree** (`cd "$WORKTREE"`), so all of its file edits and commits land on the task branch and never touch the main checkout. The prompt `cat`, stdout `>`, and stderr `2>` all use **absolute** `$RUN_DIR` paths, so run artifacts stay in the main repo even though cwd is the worktree.
 - `--dangerously-skip-permissions` is required so the child can write files and run shell commands without prompting. Only pass it when the parent loop is gated by `--unsafe-bypass-approvals` / `AGILE_LOOP_UNSAFE_BYPASS=1`. In `--dry-run` mode, do not spawn the child at all — log "DRY RUN: would run stage=<stage>".
-- `--model <stage-model>` is mandatory on **every** stage — never let a stage silently inherit an ambient default model. The implementation and code-review stages additionally pass `--effort max`; every other stage runs at default effort (omit `--effort`). Resolve both from the stage's row in **Model and effort routing** below and pass them explicitly on each `claude -p` call.
+- Both `--model <stage-model>` and `--effort <stage-effort>` are mandatory on **every** stage — never let a stage silently inherit an ambient default model or effort. Resolve both from the stage's row in **Model and effort routing** below and pass them explicitly on each `claude -p` call.
 - Build each prompt file first using the inline templates in **Prompt templates**.
 
 ## Model and effort routing
 
-All stages use latest Opus. Implementation and code-review passes additionally run at `--effort max`.
+Each stage pins its own model and effort — there is no single default. Most stages run on the latest Opus; the ship and auto-merge stages run on the latest Sonnet. Effort is set per stage (`max`, `xhigh`, or `medium`) and, for deep review, varies by pass.
 
-- **Implementation → latest Opus, `--effort max`.** Full power at implementation time.
-- **Code review (both deep-review passes) → latest Opus, `--effort max`.** Full effort review.
-- **Every other stage (plan, deep-review/QA remediation, QA, ship) → latest Opus, default effort.** No special routing — just the latest Opus model, at its default effort.
+- **Plan → latest Opus, `--effort max`.** Full power deciding the approach up front.
+- **Implementation → latest Opus, `--effort medium`.**
+- **Deep review pass 1 → latest Opus, `--effort xhigh`.** Deepest review pass.
+- **Deep review pass 2 → latest Opus, `--effort medium`.** Lighter confirmation pass.
+- **All remediation + QA (remediate-deep-review pass 1 & 2, qa, remediate-qa) → latest Opus, `--effort medium`.**
+- **Ship and auto-merge → latest Sonnet, `--effort max`.**
 
-"Latest Opus" is the `opus` model alias — the newest Opus release, which currently resolves to `claude-opus-4-8`. When a newer Opus ships, all stages follow the alias automatically.
+"Latest Opus" is the `opus` model alias (currently `claude-opus-4-8`); "latest Sonnet" is the `sonnet` alias (currently `claude-sonnet-4-6`). When a newer release ships, the stages follow the alias automatically.
 
-| Tier        | How to pass it                               |
-| ----------- | -------------------------------------------- |
-| Latest Opus | `--model opus` (currently `claude-opus-4-8`) |
+| Tier          | How to pass it                                   |
+| ------------- | ------------------------------------------------ |
+| Latest Opus   | `--model opus` (currently `claude-opus-4-8`)     |
+| Latest Sonnet | `--model sonnet` (currently `claude-sonnet-4-6`) |
 
-Per-stage routing (`<stage-model>` for each `claude -p` invocation):
+Per-stage routing (`<stage-model>` / `<stage-effort>` for each `claude -p` invocation):
 
-| Stage (`stage` value)        | `--model`       | `--effort`                |
-| ---------------------------- | --------------- | ------------------------- |
-| `plan`                       | `opus` (latest) | default — omit `--effort` |
-| `implement`                  | `opus` (latest) | `max`                     |
-| `deep-review` (pass 1 and 2) | `opus` (latest) | `max`                     |
-| `remediate-deep-review`      | `opus` (latest) | default — omit `--effort` |
-| `qa`                         | `opus` (latest) | default — omit `--effort` |
-| `remediate-qa`               | `opus` (latest) | default — omit `--effort` |
-| `ship`                       | `opus` (latest) | default — omit `--effort` |
+| Stage (`stage` value)          | `--model`         | `--effort` |
+| ------------------------------ | ----------------- | ---------- |
+| `plan`                         | `opus` (latest)   | `max`      |
+| `implement`                    | `opus` (latest)   | `medium`   |
+| `deep-review` (pass 1)         | `opus` (latest)   | `xhigh`    |
+| `deep-review` (pass 2)         | `opus` (latest)   | `medium`   |
+| `remediate-deep-review` (both) | `opus` (latest)   | `medium`   |
+| `qa`                           | `opus` (latest)   | `medium`   |
+| `remediate-qa`                 | `opus` (latest)   | `medium`   |
+| `ship`                         | `sonnet` (latest) | `max`      |
 
-Only `implement` and `deep-review` pass `--effort max`; the rest omit `--effort` and run at the model's default effort.
+`deep-review` uses `xhigh` on pass 1 (`{pass}=1`) and `medium` on pass 2 (`{pass}=2`); branch on the pass when assembling the invocation. The auto-merge step (step 10) is a mechanical `gh pr merge` run by the orchestrator, not a `claude -p` child, so it has no model/effort knob — the "ship and auto-merge → Sonnet" routing applies only to the `ship` child that precedes it.
 
 The Codex adapter (`scripts/agile-loop.sh`) passes `--default-model` / `--implementation-model` / `--review-model` for equivalent routing.
 
@@ -103,7 +108,7 @@ The steps (identical contract to `scripts/agile-loop.sh`):
 9. **Ship** — `Ship Session` template. Parse the final JSON line `{"blocked","pr_url","summary"}`. Capture `pr_url`.
 10. **Auto-merge** — the loop merges the PR itself; see **Auto-merge handling** below. Do not wait for a human.
 
-Spawn each step's child with the `--model` and effort from **Model and effort routing**: implementation on the second-best Opus at `--effort max`, deep-review on the latest Opus at `--effort max`, and every other stage on the latest Opus at default effort. Update status.json before and after each step. Use `stage` values `plan`, `implement`, `deep-review`, `remediate-deep-review`, `qa`, `remediate-qa`, `ship`. Every one of these stages spawns with cwd set to the task's worktree (`$WORKTREE`); prompt files, stage outputs, and `status.json` stay in the main repo via `$RUN_DIR`.
+Spawn each step's child with the `--model` and `--effort` from **Model and effort routing**: plan on Opus `max`; implement on Opus `medium`; deep-review on Opus `xhigh` (pass 1) / `medium` (pass 2); remediation and QA on Opus `medium`; ship on Sonnet `max`. Update status.json before and after each step. Use `stage` values `plan`, `implement`, `deep-review`, `remediate-deep-review`, `qa`, `remediate-qa`, `ship`. Every one of these stages spawns with cwd set to the task's worktree (`$WORKTREE`); prompt files, stage outputs, and `status.json` stay in the main repo via `$RUN_DIR`.
 
 ### Retry policy per agent-backed step
 
